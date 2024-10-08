@@ -14,3 +14,5 @@ myenv/
 docs/tutorials/typed.py
 docs/tutorials/temp.csv
 /typed.py
+.idea/
+.venv/

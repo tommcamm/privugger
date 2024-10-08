@@ -16,3 +16,4 @@ docs/tutorials/temp.csv
 /typed.py
 .idea/
 .venv/
+.conda/

@@ -337,5 +337,9 @@ def infer(prog, cores=2 , chains=2, draws=500, method="pymc3", return_model=Fals
             outputs.append(f(*pi))
         trace["output"] = outputs
         return az.convert_to_inference_data(trace)
+    
+    elif method == "pyro":
+        # TODO: Implement this inference method stub
+        raise NotImplementedError("Pyro is not yet supported")
     else:
         raise TypeError("Unsupported probabilistic framework")

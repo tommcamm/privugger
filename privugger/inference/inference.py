@@ -366,7 +366,6 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
             del global_model
             del global_priors
         
-        # Use the Pyro backend for stochastic variational inference
         return infer_pyro(
             prog, 
             input_specs, 

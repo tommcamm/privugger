@@ -36,24 +36,39 @@ def dist_to_pyro(privug_dist, name, hypers=None):
     
     dist_shape = torch.Size([]) if privug_dist.num_elements == -1 else torch.Size([privug_dist.num_elements])
     
+    # Flag to determine if we need to mark distribution as an event
+    is_multi_element = privug_dist.num_elements > 1
+    
     if privug_dist.__class__.__name__ == "Uniform":
         lower = torch.tensor(privug_dist.lower, dtype=torch.float32)
         upper = torch.tensor(privug_dist.upper, dtype=torch.float32)
-        return pyro.sample(name, dist.Uniform(lower, upper).expand(dist_shape))
+        dist_obj = dist.Uniform(lower, upper).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
     
     elif privug_dist.__class__.__name__ == "Normal":
         mu = torch.tensor(privug_dist.mu, dtype=torch.float32)
         std = torch.tensor(privug_dist.std, dtype=torch.float32)
-        return pyro.sample(name, dist.Normal(mu, std).expand(dist_shape))
+        dist_obj = dist.Normal(mu, std).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
     
     elif privug_dist.__class__.__name__ == "Exponential":
         rate = torch.tensor(privug_dist.lam, dtype=torch.float32)
-        return pyro.sample(name, dist.Exponential(rate).expand(dist_shape))
+        dist_obj = dist.Exponential(rate).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
     
     elif privug_dist.__class__.__name__ == "Beta":
         alpha = torch.tensor(privug_dist.alpha, dtype=torch.float32)
         beta = torch.tensor(privug_dist.beta, dtype=torch.float32)
-        return pyro.sample(name, dist.Beta(alpha, beta).expand(dist_shape))
+        dist_obj = dist.Beta(alpha, beta).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
     
     else:
         raise ValueError(f"Unsupported distribution type: {privug_dist.__class__.__name__}")
@@ -157,6 +172,8 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                 # Initialize parameters based on the prior type
                 if prior.__class__.__name__ == "Uniform":
                     # For Uniform, use a transformed distribution to ensure values stay within bounds
+                    # TODO: This is a hack to prevent issues with values outside the bounds, this needs to be verified. 
+
                     lower = torch.tensor(prior.lower, dtype=torch.float32)
                     upper = torch.tensor(prior.upper, dtype=torch.float32)
                     
@@ -220,7 +237,10 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     )
                     
                     # Sample from Beta distribution directly
-                    pyro.sample(dist_name, dist.Beta(alpha_param, beta_param).expand(dist_shape))
+                    dist_obj = dist.Beta(alpha_param, beta_param).expand(dist_shape)
+                    if prior.num_elements > 1:  # If it's a multi-element distribution
+                        dist_obj = dist_obj.to_event(1)
+                    pyro.sample(dist_name, dist_obj)
                 
                 elif prior.__class__.__name__ == "Normal":
                     # For Normal, initialize with the prior's parameters
@@ -235,7 +255,10 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     )
                     
                     # Sample from the approximate posterior
-                    pyro.sample(dist_name, dist.Normal(mu_param, sigma_param).expand(dist_shape))
+                    dist_obj = dist.Normal(mu_param, sigma_param).expand(dist_shape)
+                    if prior.num_elements > 1:  # If it's a multi-element distribution
+                        dist_obj = dist_obj.to_event(1)
+                    pyro.sample(dist_name, dist_obj)
                 
                 # Add support for other distribution types as needed
                 else:
@@ -259,7 +282,10 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     )
                     
                     # Sample from the approximate posterior
-                    pyro.sample(dist_name, dist.Normal(mu_param, sigma_param).expand(dist_shape))
+                    dist_obj = dist.Normal(mu_param, sigma_param).expand(dist_shape)
+                    if prior.num_elements > 1:  # If it's a multi-element distribution
+                        dist_obj = dist_obj.to_event(1)
+                    pyro.sample(dist_name, dist_obj)
     
     return guide_fn
 

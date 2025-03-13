@@ -13,6 +13,13 @@ import arviz as az
 import os
 import importlib
 
+# Import the Pyro backend
+try:
+    from privugger.inference.pyro_backend import infer_pyro
+    PYRO_AVAILABLE = True
+except ImportError:
+    PYRO_AVAILABLE = False
+
 ## Create a global pymc3 model and list of priors
 global_model  = None
 global_priors = []
@@ -195,23 +202,31 @@ def sample_prior(model, samples=50):
 
         return prior_checks
     
-def infer(prog, cores=2 , chains=2, draws=500, method="pymc3", return_model=False, args_analyse = 3, args = None):
+def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False, args_analyse=3, args=None,
+          target_idx=0, svi_steps=1000):
     """
-    
     Parameters
     -----------
     
     prog: the program type specified as a privugger.Program type
     
-    cores: Int number of cores to use for sampling. Default 500
+    cores: Int number of cores to use for sampling. Default 2
     
     chains: Int number of chains. Default 2
 
-    draws: Int number of draws. Default 2
+    draws: Int number of draws. Default 500
 
-    method: String specifying which backend to use
+    method: String specifying which backend to use. Options: "pymc3", "scipy", "pyro"
 
     return_model: Boolean. Returns the probabilistic model if true and the trace if false
+
+    args_analyse: Int default 3
+
+    args: Additional arguments (optional)
+
+    target_idx: Int index of the target individual's distribution for Pyro SVI. Default 0
+
+    svi_steps: Int number of SVI steps for Pyro backend. Default 1000
 
     Returns
     ----------
@@ -337,5 +352,29 @@ def infer(prog, cores=2 , chains=2, draws=500, method="pymc3", return_model=Fals
             outputs.append(f(*pi))
         trace["output"] = outputs
         return az.convert_to_inference_data(trace)
+    
+    elif method == "pyro":
+        # Check if Pyro is available
+        if not PYRO_AVAILABLE:
+            raise ImportError("Pyro backend is not available. Please install pyro-ppl: pip install pyro-ppl")
+        
+        # Reset PyMC state if it was initialized
+        if global_model_set:
+            concatenated = False
+            stacked = False
+            global_model_set = False
+            del global_model
+            del global_priors
+        
+        # Use the Pyro backend for stochastic variational inference
+        return infer_pyro(
+            program, 
+            input_specs, 
+            output_type=output, 
+            num_steps=svi_steps,
+            num_samples=draws, 
+            target_idx=target_idx
+        )
+    
     else:
-        raise TypeError("Unsupported probabilistic framework")
+        raise TypeError(f"Unsupported probabilistic framework: {method}. Supported methods: 'pymc3', 'scipy', 'pyro'")

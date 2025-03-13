@@ -152,28 +152,75 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
             # Focus on the target individual (usually at target_idx)
             if idx == target_idx:
                 dist_name = prior.name
+                dist_shape = torch.Size([prior.num_elements]) if prior.num_elements != -1 else torch.Size([])
                 
                 # Initialize parameters based on the prior type
                 if prior.__class__.__name__ == "Uniform":
-                    # For Uniform, we initialize at the midpoint with small std
-                    loc_init = (prior.lower + prior.upper) / 2.0
-                    scale_init = (prior.upper - prior.lower) / 10.0
+                    # For Uniform, use a transformed distribution to ensure values stay within bounds
+                    lower = torch.tensor(prior.lower, dtype=torch.float32)
+                    upper = torch.tensor(prior.upper, dtype=torch.float32)
                     
-                    # Define learnable parameters for the target
-                    mu_param = pyro.param(
-                        f"mu_{dist_name}", 
-                        torch.tensor(loc_init, dtype=torch.float32)
+                    # Initialize parameters in unconstrained space
+                    # Start at the logit of the midpoint to ensure it maps close to the center
+                    midpoint = (prior.lower + prior.upper) / 2.0
+                    # Map [lower, upper] -> [0, 1] -> unconstrained space
+                    normalized_midpoint = (midpoint - prior.lower) / (prior.upper - prior.lower)
+                    # Apply logit transformation (inverse of sigmoid) to get to unconstrained space
+                    # Add small epsilon to avoid log(0) or log(1)
+                    epsilon = 1e-6
+                    # Convert to tensor before applying torch.log
+                    init_value = torch.log(torch.tensor(normalized_midpoint / (1 - normalized_midpoint + epsilon) + epsilon, dtype=torch.float32))
+                    
+                    # Create unconstrained parameter
+                    loc_param = pyro.param(
+                        f"loc_{dist_name}",
+                        torch.tensor(init_value, dtype=torch.float32)
                     )
-                    sigma_param = pyro.param(
-                        f"sigma_{dist_name}", 
-                        torch.tensor(scale_init, dtype=torch.float32),
+                    
+                    # Create a scale parameter in unconstrained space
+                    scale_param = pyro.param(
+                        f"scale_{dist_name}",
+                        torch.tensor(0.1, dtype=torch.float32),
                         constraint=dist.constraints.positive
                     )
                     
-                    # Sample from the approximate posterior
-                    pyro.sample(dist_name, dist.Normal(mu_param, sigma_param).expand(
-                        torch.Size([prior.num_elements]) if prior.num_elements != -1 else torch.Size([])
-                    ))
+                    # Create a Normal distribution in unconstrained space
+                    base_dist = dist.Normal(loc_param, scale_param).expand(dist_shape)
+                    
+                    # Create a sigmoid transformation to map R -> (0,1)
+                    sigmoid_transform = dist.transforms.SigmoidTransform()
+                    
+                    # Create an affine transformation to map (0,1) -> (lower, upper)
+                    affine_transform = dist.transforms.AffineTransform(
+                        loc=lower,
+                        scale=upper - lower
+                    )
+                    
+                    # Compose the transformations
+                    transform = dist.transforms.ComposeTransform([sigmoid_transform, affine_transform])
+                    
+                    # Create a transformed distribution for sampling
+                    transformed_dist = dist.TransformedDistribution(base_dist, transform)
+                    
+                    # Sample from the transformed distribution
+                    pyro.sample(dist_name, transformed_dist)
+                
+                elif prior.__class__.__name__ == "Beta":
+                    # For Beta, we can use a Beta distribution directly for the posterior
+                    # Initialize with the prior parameters
+                    alpha_param = pyro.param(
+                        f"alpha_{dist_name}",
+                        torch.tensor(prior.alpha, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    beta_param = pyro.param(
+                        f"beta_{dist_name}",
+                        torch.tensor(prior.beta, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    
+                    # Sample from Beta distribution directly
+                    pyro.sample(dist_name, dist.Beta(alpha_param, beta_param).expand(dist_shape))
                 
                 elif prior.__class__.__name__ == "Normal":
                     # For Normal, initialize with the prior's parameters
@@ -188,9 +235,7 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     )
                     
                     # Sample from the approximate posterior
-                    pyro.sample(dist_name, dist.Normal(mu_param, sigma_param).expand(
-                        torch.Size([prior.num_elements]) if prior.num_elements != -1 else torch.Size([])
-                    ))
+                    pyro.sample(dist_name, dist.Normal(mu_param, sigma_param).expand(dist_shape))
                 
                 # Add support for other distribution types as needed
                 else:
@@ -214,9 +259,7 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     )
                     
                     # Sample from the approximate posterior
-                    pyro.sample(dist_name, dist.Normal(mu_param, sigma_param).expand(
-                        torch.Size([prior.num_elements]) if prior.num_elements != -1 else torch.Size([])
-                    ))
+                    pyro.sample(dist_name, dist.Normal(mu_param, sigma_param).expand(dist_shape))
     
     return guide_fn
 

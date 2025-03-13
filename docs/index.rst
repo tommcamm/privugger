@@ -38,6 +38,7 @@ Furthermore, Privugger is equipped with a module to perform *automatic attacker 
    privugger.inference
    privugger.measures
    privugger.attacker
+   development
    
 
 

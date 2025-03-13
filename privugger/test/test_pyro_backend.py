@@ -115,6 +115,39 @@ class TestPyroBackend(unittest.TestCase):
         self.assertAlmostEqual(learned_mu, 30.0, delta=5.0)
         self.assertAlmostEqual(learned_sigma, 5.0, delta=3.0)
     
+    def test_pyro_uniform(self):
+        """
+        Test the Pyro backend with a Uniform distribution
+        """
+        # Define a simple uniform prior
+        x = pv.Uniform("x", lower=0.0, upper=10.0)
+        
+        # Create dataset and program with the identity function
+        ds = pv.Dataset(input_specs=[x])
+        prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_identity)
+        
+        # Run inference with Pyro backend
+        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=500)
+        
+        # Check that we have the expected outputs
+        self.assertIn("x", trace.posterior)
+        self.assertIn("output", trace.posterior)
+        
+        # Check shapes
+        self.assertEqual(trace.posterior["x"].shape[1], 1000)  # 1000 samples
+        
+        # Check that samples are within the bounds
+        x_samples = trace.posterior["x"].values.flatten()
+        self.assertGreaterEqual(np.min(x_samples), 0.0)
+        self.assertLessEqual(np.max(x_samples), 10.0)
+        
+        # Check that output is approximately equal to x (since we used the identity function)
+        np.testing.assert_allclose(
+            trace.posterior["x"].values.mean(), 
+            trace.posterior["output"].values.mean(), 
+            rtol=0.1
+        )
+    
     def test_backend_comparison(self):
         """
         Compare PyMC and Pyro backends on the same simple model

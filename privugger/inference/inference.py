@@ -368,12 +368,13 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
         
         # Use the Pyro backend for stochastic variational inference
         return infer_pyro(
-            program, 
+            prog, 
             input_specs, 
             output_type=output, 
             num_steps=svi_steps,
             num_samples=draws, 
-            target_idx=target_idx
+            target_idx=target_idx,
+            output_name=prog.name
         )
     
     else:

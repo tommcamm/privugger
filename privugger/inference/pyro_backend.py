@@ -34,7 +34,7 @@ def dist_to_pyro(privug_dist, name, hypers=None):
         # Handle special case for concatenated/stacked distributions
         return None
     
-    dist_shape = None if privug_dist.num_elements == -1 else torch.Size([privug_dist.num_elements])
+    dist_shape = torch.Size([]) if privug_dist.num_elements == -1 else torch.Size([privug_dist.num_elements])
     
     if privug_dist.__class__.__name__ == "Uniform":
         lower = torch.tensor(privug_dist.lower, dtype=torch.float32)
@@ -58,14 +58,15 @@ def dist_to_pyro(privug_dist, name, hypers=None):
     else:
         raise ValueError(f"Unsupported distribution type: {privug_dist.__class__.__name__}")
 
-def generate_model(prog, input_specs, name="model"):
+def generate_model(prog, input_specs, name="output"):
     """
     Generate a Pyro model function from a Privugger program.
     
     Parameters
     ----------
-    prog : callable or None
-        The program function to execute, or None if using priors directly
+    prog : callable, str, or None
+        The program function to execute, a string path to a program file, 
+        or None if using priors directly
     input_specs : list
         List of input specifications (distributions)
     name : str, optional
@@ -76,6 +77,24 @@ def generate_model(prog, input_specs, name="model"):
     model : callable
         The Pyro model function
     """
+    # If prog is a string (file path), load the function from the file
+    prog_function = prog
+    if isinstance(prog, str):
+        import importlib.util
+        import os
+        
+        # Get the absolute path
+        file_path = os.path.abspath(prog)
+        
+        # Load the module
+        module_name = os.path.basename(file_path).replace('.py', '')
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        
+        # Get the 'name' function from the module
+        prog_function = getattr(module, 'name')
+    
     def model_fn():
         # Sample from priors
         prior_samples = []
@@ -94,9 +113,9 @@ def generate_model(prog, input_specs, name="model"):
             prior_samples.append(prior_sample)
         
         # If there's a program function, execute it with the prior samples
-        if prog is not None:
+        if prog_function is not None:
             # Execute the program with the sampled priors
-            result = prog(*prior_samples)
+            result = prog_function(*prior_samples)
             
             # Return the program output as a deterministic node
             return pyro.deterministic(name, result)
@@ -293,14 +312,14 @@ def pyro_to_arviz(samples):
     # Convert to ArviZ format
     return az.convert_to_inference_data(posterior_dict)
 
-def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, target_idx=0):
+def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, target_idx=0, output_name="output"):
     """
     Run inference using Pyro backend.
     
     Parameters
     ----------
-    prog : callable
-        The program function
+    prog : callable or Program object
+        The program function or Program object
     input_specs : list
         List of input specifications (distributions)
     output_type : type
@@ -311,14 +330,25 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
         Number of posterior samples
     target_idx : int, optional
         Index of the target individual's distribution
+    output_name : str, optional
+        Name of the output variable, defaults to "output"
         
     Returns
     -------
     data : arviz.InferenceData
         The posterior samples in ArviZ format
     """
+    # Check if prog is a Program object and get the name and function
+    prog_function = prog
+    prog_name = output_name
+    
+    # If it's a Program object (from privugger.data_structures.program.Program)
+    if hasattr(prog, 'program') and hasattr(prog, 'name'):
+        prog_function = prog.program
+        prog_name = prog.name
+    
     # Create model and guide
-    model = generate_model(prog, input_specs)
+    model = generate_model(prog_function, input_specs, name=prog_name)
     guide = generate_guide(input_specs, target_idx)
     
     # Run SVI

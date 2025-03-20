@@ -1,188 +1,32 @@
 import os
-import sys
-import inspect
 import numpy as np
 import torch
 import pyro
 import unittest
-import arviz as az
-
-# Add the parent directory to the path to import privugger
-sys.path.append(os.path.join("../.."))
-
-currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
-parentdir = os.path.dirname(currentdir)
-sys.path.insert(0, parentdir)
+import pytest
 
 import privugger as pv
-from privugger.inference.pyro_backend import dist_to_pyro, generate_model, generate_guide, run_svi, parse_observation, apply_constraint
+from privugger.inference.pyro_backend import parse_observation, apply_constraint
 
-# Import test programs
-program_identity = "privugger/test/identity.py"
-program_addition = "privugger/test/addition.py"
-program_multiplication = "privugger/test/multiplication.py"
+# Import example programs using relative paths that work cross-platform
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+program_identity = os.path.join(BASE_DIR, "test", "example_programs", "basic", "identity.py")
+program_addition = os.path.join(BASE_DIR, "test", "example_programs", "basic", "addition.py")
+program_multiplication = os.path.join(BASE_DIR, "test", "example_programs", "basic", "multiplication.py")
 
-class TestPyroBackend(unittest.TestCase):
+@pytest.mark.pyro
+class TestPyroObservations(unittest.TestCase):
+    """
+    Tests for observation handling in the Pyro backend.
+    
+    These tests focus on the functionality of parsing observation strings
+    and applying constraints to models during inference.
+    """
     
     def setUp(self):
         # Reset state before each test
         pv.reset()
         pyro.clear_param_store()
-    
-    def test_basic_svi(self):
-        """
-        Test a basic SVI run with the Pyro backend
-        """
-        # Define a simple prior distribution
-        age = pv.Normal("age", mu=30.0, std=5.0)
-        
-        # Create dataset and program
-        ds = pv.Dataset(input_specs=[age])
-        prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_identity)
-        
-        # Run inference with Pyro backend
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=500)
-        
-        # Check that we have the expected outputs
-        self.assertIn("age", trace.posterior)
-        self.assertIn("output", trace.posterior)
-        
-        # Check shapes are correct
-        self.assertEqual(trace.posterior["age"].shape[1], 500)  # 500 samples per chain
-        self.assertEqual(trace.posterior["output"].shape[1], 500)  # 500 samples per chain
-        
-        # Check that output is approximately equal to age (since we used the identity function)
-        np.testing.assert_allclose(
-            trace.posterior["age"].values.mean(), 
-            trace.posterior["output"].values.mean(), 
-            rtol=0.1
-        )
-    
-    def test_pyro_normal_addition(self):
-        """
-        Test the Pyro backend with a simple addition program
-        """
-        # Define priors
-        a = pv.Normal("age", mu=10.0, std=2.0)
-        b = pv.Normal("height", mu=40.0, std=5.0)
-        
-        # Create dataset and program
-        ds = pv.Dataset(input_specs=[a, b])
-        prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_addition)
-        
-        # Run inference with Pyro backend
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=500)
-        
-        # Check that the mean of the output is approximately equal to the sum of means
-        np.testing.assert_allclose(
-            trace.posterior["output"].values.mean(), 
-            trace.posterior["age"].values.mean() + trace.posterior["height"].values.mean(),
-            rtol=0.1
-        )
-    
-    def test_guide_parameter_learning(self):
-        """
-        Test that the guide parameters are being learned properly
-        """
-        # Define a simple prior
-        age = pv.Normal("age", mu=30.0, std=5.0)
-        
-        # Create model and guide
-        ds = pv.Dataset(input_specs=[age])
-        prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_identity)
-        
-        # Create model and guide functions
-        model = generate_model(prog.program, [age], name="model")
-        guide = generate_guide([age], target_idx=0, name="guide")
-        
-        # Initial parameter check - guide parameters should not exist yet
-        self.assertFalse("mu_age" in pyro.get_param_store())
-        self.assertFalse("sigma_age" in pyro.get_param_store())
-        
-        # Run SVI
-        svi, losses = run_svi(model, guide, num_steps=300, lr=0.01)
-        
-        # Now the parameters should exist
-        self.assertTrue("mu_age" in pyro.get_param_store())
-        self.assertTrue("sigma_age" in pyro.get_param_store())
-        
-        # Check that the learned parameters are close to the prior
-        learned_mu = pyro.param("mu_age").item()
-        learned_sigma = pyro.param("sigma_age").item()
-        
-        # Since we're using the identity function, the learned parameters
-        # should be close to the original distribution parameters
-        self.assertAlmostEqual(learned_mu, 30.0, delta=5.0)
-        self.assertAlmostEqual(learned_sigma, 5.0, delta=3.0)
-    
-    def test_pyro_uniform(self):
-        """
-        Test the Pyro backend with a Uniform distribution
-        """
-        # Define a simple uniform prior
-        x = pv.Uniform("x", lower=0.0, upper=10.0)
-        
-        # Create dataset and program with the identity function
-        ds = pv.Dataset(input_specs=[x])
-        prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_identity)
-        
-        # Run inference with Pyro backend
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=500)
-        
-        # Check that we have the expected outputs
-        self.assertIn("x", trace.posterior)
-        self.assertIn("output", trace.posterior)
-        
-        # Check shapes
-        self.assertEqual(trace.posterior["x"].shape[1], 500)  # 500 samples per chain
-        
-        # Check that samples are within the bounds
-        x_samples = trace.posterior["x"].values.flatten()
-        self.assertGreaterEqual(np.min(x_samples), 0.0)
-        self.assertLessEqual(np.max(x_samples), 10.0)
-        
-        # Check that output is approximately equal to x (since we used the identity function)
-        np.testing.assert_allclose(
-            trace.posterior["x"].values.mean(), 
-            trace.posterior["output"].values.mean(), 
-            rtol=0.1
-        )
-    
-    def test_backend_comparison(self):
-        """
-        Compare PyMC and Pyro backends on the same simple model
-        """
-        # Define a simple prior
-        age = pv.Normal("age", mu=25.0, std=3.0)
-        
-        # Create dataset and program
-        ds = pv.Dataset(input_specs=[age])
-        prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_identity)
-        
-        # Run inference with both backends
-        pymc_trace = pv.infer(prog, draws=1000, method="pymc3")
-        
-        # Reset for the next inference
-        pv.reset()
-        
-        # Run with Pyro backend
-        pyro_trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=500)
-        
-        # Compare the means of the posteriors
-        pymc_mean = pymc_trace.posterior["output"].values.mean()
-        pyro_mean = pyro_trace.posterior["output"].values.mean()
-        
-        # The means should be relatively close
-        self.assertAlmostEqual(pymc_mean, pyro_mean, delta=3.0)
-        
-        # Also check the standard deviations
-        pymc_std = pymc_trace.posterior["output"].values.std()
-        pyro_std = pyro_trace.posterior["output"].values.std()
-        
-        # The standard deviations should also be relatively close
-        self.assertAlmostEqual(pymc_std, pyro_std, delta=2.0)
-    
-    # Tests for the observation feature
     
     def test_parse_observation(self):
         """
@@ -214,9 +58,13 @@ class TestPyroBackend(unittest.TestCase):
         self.assertEqual(parsed["constraint2"], "==")
         self.assertEqual(parsed["value2"], 10)
     
+    @pytest.mark.slow
     def test_inequality_observation(self):
         """
         Test Pyro backend with an inequality observation
+        
+        This test verifies that adding an inequality constraint
+        (output >= 25) shifts the posterior distribution appropriately.
         """
         # Define a simple prior with a wider range
         age = pv.Normal("age", mu=20.0, std=10.0)
@@ -244,9 +92,13 @@ class TestPyroBackend(unittest.TestCase):
         # The mean should be greater than the prior mean due to the constraint
         self.assertGreater(output_samples.mean(), 20.0)
     
+    @pytest.mark.slow
     def test_bounded_observation(self):
         """
         Test Pyro backend with a bounded observation
+        
+        This test checks that adding a bounded constraint (5 <= output <= 10)
+        properly constrains the posterior distribution.
         """
         # Define a simple prior with a wider range
         x = pv.Normal("x", mu=0.0, std=10.0)
@@ -281,9 +133,13 @@ class TestPyroBackend(unittest.TestCase):
         # The mean should be pulled toward the constraint range
         self.assertGreater(output_samples.mean(), 0.0)  # Original mean was 0.0
     
+    @pytest.mark.slow
     def test_equality_observation(self):
         """
         Test Pyro backend with an equality observation
+        
+        This test checks that equality constraints (output == 7)
+        concentrate the posterior distribution around the target value.
         """
         # Define a simple prior
         x = pv.Normal("x", mu=0.0, std=5.0)
@@ -314,6 +170,9 @@ class TestPyroBackend(unittest.TestCase):
     def test_observation_precision(self):
         """
         Test how different precision values affect observation constraints
+        
+        This test explores how varying the precision parameter affects
+        the strictness of the observation constraints.
         """
         # Test with different precision values
         precisions = [0.05, 0.5, 2.0]  # From strict to lenient
@@ -348,9 +207,12 @@ class TestPyroBackend(unittest.TestCase):
         self.assertGreaterEqual(constraint_adherence[0], constraint_adherence[2],
                               "Stricter precision should lead to higher constraint adherence")
     
+    @pytest.mark.slow
     def test_observation_with_addition(self):
         """
         Test observation with addition program
+        
+        Checks that constraints work correctly with non-identity programs.
         """
         # Define priors
         a = pv.Normal("age", mu=10.0, std=2.0)
@@ -378,9 +240,12 @@ class TestPyroBackend(unittest.TestCase):
         # The mean should be greater than the unconstrained mean (10 + 40 = 50)
         self.assertGreater(output_samples.mean(), 50.0)
     
+    @pytest.mark.slow
     def test_observation_with_multiplication(self):
         """
         Test observation with multiplication program
+        
+        Checks that constraints work correctly with non-linear programs.
         """
         # Define priors
         a = pv.Normal("age", mu=5.0, std=1.0)
@@ -408,6 +273,7 @@ class TestPyroBackend(unittest.TestCase):
         # The mean should be less than the unconstrained mean (5 * 6 = 30)
         # but since constraints are soft, we allow a bit of flexibility
         self.assertLess(output_samples.mean(), 32.0)
+
 
 if __name__ == '__main__':
     unittest.main()

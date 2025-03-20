@@ -55,15 +55,11 @@ class TestPyroBasicInference(unittest.TestCase):
         """
         Test the Pyro backend with a simple addition program
         """
-        # Define priors
         a = pv.Normal("age", mu=10.0, std=2.0)
         b = pv.Normal("height", mu=40.0, std=5.0)
-        
-        # Create dataset and program
+
         ds = pv.Dataset(input_specs=[a, b])
         prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_addition)
-        
-        # Run inference with Pyro backend
         trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=500)
         
         # Check that the mean of the output is approximately equal to the sum of means
@@ -77,14 +73,10 @@ class TestPyroBasicInference(unittest.TestCase):
         """
         Test the Pyro backend with a Uniform distribution
         """
-        # Define a simple uniform prior
         x = pv.Uniform("x", lower=0.0, upper=10.0)
         
-        # Create dataset and program with the identity function
         ds = pv.Dataset(input_specs=[x])
         prog = pv.Program("output", dataset=ds, output_type=pv.Float, function=program_identity)
-        
-        # Run inference with Pyro backend
         trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=500)
         
         # Check that we have the expected outputs

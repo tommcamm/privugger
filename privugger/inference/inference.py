@@ -203,7 +203,7 @@ def sample_prior(model, samples=50):
         return prior_checks
     
 def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False, args_analyse=3, args=None,
-          target_idx=0, svi_steps=1000, svi_lr=0.01):
+          target_idx=0, svi_steps=1000, svi_lr=0.01, apply_constraints_filter=False):
     """
     Parameters
     -----------
@@ -229,6 +229,9 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
     svi_steps: Int number of SVI steps for Pyro backend. Default 1000
     
     svi_lr: Float learning rate for SVI optimizer in Pyro backend. Default 0.01
+    
+    apply_constraints_filter: Boolean. When using Pyro backend, whether to apply hard constraint 
+        filtering to samples. When True, only samples satisfying constraints are returned. Default False
 
     Returns
     ----------
@@ -377,7 +380,8 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
             target_idx=target_idx,
             output_name=prog.name,
             chains=chains,
-            lr=svi_lr
+            lr=svi_lr,
+            apply_constraints_filter=apply_constraints_filter
         )
     
     else:

@@ -77,8 +77,8 @@ class TestPyroObservations(unittest.TestCase):
         # Use smaller precision value for stricter constraint
         prog.add_observation("output >= 25", precision=0.01)
         
-        # Run inference with Pyro backend - use more SVI steps
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005)
+        # Run inference with Pyro backend - use more SVI steps and enable constraint filtering
+        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005, apply_constraints_filter=True)
         
         # Get output samples
         output_samples = trace.posterior["output"].values.flatten()
@@ -111,8 +111,8 @@ class TestPyroObservations(unittest.TestCase):
         # Use smaller precision value for stricter constraint
         prog.add_observation("5 <= output <= 10", precision=0.01)
         
-        # Run inference with Pyro backend - more steps and lower learning rate
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005)
+        # Run inference with Pyro backend - more steps, lower learning rate, and constraint filtering
+        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005, apply_constraints_filter=True)
         
         # Get output samples
         output_samples = trace.posterior["output"].values.flatten()
@@ -153,8 +153,8 @@ class TestPyroObservations(unittest.TestCase):
         # Use very small precision for stricter constraint
         prog.add_observation(f"output == {target_value}", precision=0.001)
         
-        # Run inference with Pyro backend - more steps and lower learning rate
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005)
+        # Run inference with Pyro backend - more steps, lower learning rate, and constraint filtering
+        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005, apply_constraints_filter=True)
         
         # Get output samples
         output_samples = trace.posterior["output"].values.flatten()
@@ -193,8 +193,8 @@ class TestPyroObservations(unittest.TestCase):
             # Add observation: output >= 3
             prog.add_observation("output >= 3", precision=precision)
             
-            # Run inference with Pyro backend
-            trace = pv.infer(prog, draws=500, method="pyro", svi_steps=500)
+            # Run inference with Pyro backend with constraint filtering
+            trace = pv.infer(prog, draws=500, method="pyro", svi_steps=500, apply_constraints_filter=True)
             
             # Get output samples
             output_samples = trace.posterior["output"].values.flatten()
@@ -226,8 +226,8 @@ class TestPyroObservations(unittest.TestCase):
         # Use smaller precision for stricter constraint
         prog.add_observation("output >= 60", precision=0.01)
         
-        # Run inference with Pyro backend - more steps, lower learning rate
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005)
+        # Run inference with Pyro backend - more steps, lower learning rate, and constraint filtering
+        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005, apply_constraints_filter=True)
         
         # Get samples
         output_samples = trace.posterior["output"].values.flatten()
@@ -259,8 +259,8 @@ class TestPyroObservations(unittest.TestCase):
         # Use smaller precision for stricter constraint
         prog.add_observation("output <= 25", precision=0.01)
         
-        # Run inference with Pyro backend - more steps, lower learning rate
-        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005)
+        # Run inference with Pyro backend - more steps, lower learning rate, and constraint filtering
+        trace = pv.infer(prog, draws=1000, method="pyro", svi_steps=5000, svi_lr=0.005, apply_constraints_filter=True)
         
         # Get samples
         output_samples = trace.posterior["output"].values.flatten()

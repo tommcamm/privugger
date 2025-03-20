@@ -177,7 +177,7 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     lower = torch.tensor(prior.lower, dtype=torch.float32)
                     upper = torch.tensor(prior.upper, dtype=torch.float32)
                     
-                    # Initialize parameters in unconstrained space
+                    # Initialize parameters in unconstrained space  
                     # Start at the logit of the midpoint to ensure it maps close to the center
                     midpoint = (prior.lower + prior.upper) / 2.0
                     # Map [lower, upper] -> [0, 1] -> unconstrained space
@@ -358,7 +358,7 @@ def get_posterior_samples(model, guide, num_samples=1000):
     
     return samples
 
-def pyro_to_arviz(samples):
+def pyro_to_arviz(samples, num_chains=2):
     """
     Convert Pyro samples to ArviZ format.
     
@@ -366,6 +366,8 @@ def pyro_to_arviz(samples):
     ----------
     samples : dict
         Dictionary of samples from Pyro
+    num_chains : int, optional
+        Number of chains to use in output (default: 2)
         
     Returns
     -------
@@ -376,12 +378,32 @@ def pyro_to_arviz(samples):
     posterior_dict = {}
     for k, v in samples.items():
         if torch.is_tensor(v):
-            posterior_dict[k] = v.detach().numpy()
+            # Convert tensor to numpy
+            numpy_array = v.detach().numpy()
+            
+            # Reshape to match ArviZ expectation (chains, draws, *shape)
+            # Assume numpy_array is of shape (num_samples, *dims)
+            n_samples = numpy_array.shape[0]
+            draws_per_chain = n_samples // num_chains
+            
+            if draws_per_chain > 0:
+                # If we can split the samples into chains
+                reshaped_array = numpy_array[:num_chains * draws_per_chain]
+                reshaped_array = reshaped_array.reshape(
+                    num_chains, draws_per_chain, *numpy_array.shape[1:]
+                )
+                posterior_dict[k] = reshaped_array
+            else:
+                # If we have fewer samples than chains, reorganize differently
+                # Create a single chain
+                posterior_dict[k] = numpy_array.reshape(
+                    1, n_samples, *numpy_array.shape[1:]
+                )
     
-    # Convert to ArviZ format
+    # Convert to ArviZ format with explicit dimensions
     return az.convert_to_inference_data(posterior_dict)
 
-def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, target_idx=0, output_name="output"):
+def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, target_idx=0, output_name="output", chains=2, lr=0.01):
     """
     Run inference using Pyro backend.
     
@@ -421,10 +443,11 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
     guide = generate_guide(input_specs, target_idx)
     
     # Run SVI
-    svi, losses = run_svi(model, guide, num_steps=num_steps)
+    svi, losses = run_svi(model, guide, num_steps=num_steps, lr=lr)
     
     # Get posterior samples
+    # Potential approximation issue
     samples = get_posterior_samples(model, guide, num_samples=num_samples)
     
-    # Convert to ArviZ format
-    return pyro_to_arviz(samples)
+    # Convert to ArviZ format, passing the chains parameter
+    return pyro_to_arviz(samples, num_chains=chains)

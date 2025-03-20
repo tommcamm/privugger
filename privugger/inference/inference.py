@@ -203,7 +203,7 @@ def sample_prior(model, samples=50):
         return prior_checks
     
 def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False, args_analyse=3, args=None,
-          target_idx=0, svi_steps=1000):
+          target_idx=0, svi_steps=1000, svi_lr=0.01):
     """
     Parameters
     -----------
@@ -227,6 +227,8 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
     target_idx: Int index of the target individual's distribution for Pyro SVI. Default 0
 
     svi_steps: Int number of SVI steps for Pyro backend. Default 1000
+    
+    svi_lr: Float learning rate for SVI optimizer in Pyro backend. Default 0.01
 
     Returns
     ----------
@@ -373,7 +375,9 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
             num_steps=svi_steps,
             num_samples=draws, 
             target_idx=target_idx,
-            output_name=prog.name
+            output_name=prog.name,
+            chains=chains,
+            lr=svi_lr
         )
     
     else:

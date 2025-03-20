@@ -81,13 +81,26 @@ Building Documentation
    
       pip install sphinx nbsphinx sphinx_rtd_theme
 
-3. Navigate to the docs directory:
+3. If using a conda environment, register a Jupyter kernel for it:
+
+   .. code-block:: bash
+   
+      # Ensure your conda environment is activated
+      conda activate privugger
+      
+      # Install ipykernel if needed
+      conda install ipykernel
+      
+      # Register the kernel with the same name as your environment
+      python -m ipykernel install --user --name privugger --display-name "Python (privugger)"
+
+4. Navigate to the docs directory:
 
    .. code-block:: bash
    
       cd docs/
 
-4. Build the HTML documentation:
+5. Build the HTML documentation:
 
    .. code-block:: bash
    

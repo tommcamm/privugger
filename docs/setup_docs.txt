@@ -2,7 +2,11 @@
 
 2) pip install sphinx nbsphinx sphinx_rtd_theme
 
-3) cd docs/
+3) If using conda environment:
+   a) Ensure your conda environment is activated: conda activate privugger
+   b) Install ipykernel if needed: conda install ipykernel
+   c) Register the kernel: python -m ipykernel install --user --name privugger --display-name "Python (privugger)"
 
-4) make html
+4) cd docs/
 
+5) make html

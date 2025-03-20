@@ -6,7 +6,7 @@ import unittest
 import pytest
 
 import privugger as pv
-from privugger.inference.pyro_backend import parse_observation, apply_constraint
+from privugger.inference.pyro.observations import parse_observation
 
 # Import example programs using relative paths that work cross-platform
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

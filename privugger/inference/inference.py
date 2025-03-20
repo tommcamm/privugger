@@ -15,7 +15,7 @@ import importlib
 
 # Import the Pyro backend
 try:
-    from privugger.inference.pyro_backend import infer_pyro
+    from privugger.inference.pyro import infer_pyro
     PYRO_AVAILABLE = True
 except ImportError:
     PYRO_AVAILABLE = False

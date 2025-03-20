@@ -21,6 +21,7 @@ class Program:
             self.name                 = name
             self.program              = function
             self.observation          = None
+            self.observation_precision = None  # Store precision for Pyro backend
             self.execute_observations = lambda a,b: None
         else:
             raise ValueError("The dataset has to be of type privugger.Dataset")
@@ -93,6 +94,10 @@ class Program:
         partial1 = lambda x: None
         partial2 = lambda x: None
         if name in var_names or "output" in name:
+            # Store the raw constraint string and precision for Pyro backend
+            self.observation = constraints
+            self.observation_precision = precision
+            
             if val1 != "" and cons1 != "":
                 v1 = float(val1) if "." in val1 else int(val1)
                 partial1 = self._unwrap_constrain(v1, cons1, precision)

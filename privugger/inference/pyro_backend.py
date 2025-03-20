@@ -73,6 +73,133 @@ def dist_to_pyro(privug_dist, name, hypers=None):
     else:
         raise ValueError(f"Unsupported distribution type: {privug_dist.__class__.__name__}")
 
+def parse_observation(constraints_str):
+    """
+    Parse observation string and extract values, operators and variable name.
+    
+    Parameters
+    ----------
+    constraints_str : str
+        String representing the constraints/observation
+        
+    Returns
+    -------
+    dict
+        Dictionary containing parsed observation components
+    """
+    import re
+    
+    # Remove spaces for consistent parsing
+    constraints = constraints_str.replace(" ", "")
+    
+    # Regular expression pattern for constraint parsing
+    cons = r"[-+]?([0-9]*\.[0-9]+|[0-9]+)*([>=<]*)([a-zA-Z\s]*)([>=<]{2,})[-+]?([0-9]*\.[0-9]+|[0-9]+|\[(\d*,?)*\])*"
+    vals = re.search(cons, constraints)
+    
+    if not vals:
+        return None
+        
+    # Extract components
+    val1 = vals.group(1)
+    cons1 = vals.group(2)
+    name = vals.group(3)
+    cons2 = vals.group(4)
+    val2 = vals.group(5)
+    
+    # Convert values to appropriate types
+    v1 = None
+    v2 = None
+    
+    if val1 and cons1:
+        v1 = float(val1) if "." in val1 else int(val1)
+    
+    if val2:
+        if val2[0] == "[":  # Handle vector case
+            v2 = torch.tensor([int(v) for v in val2[1:-1].split(',')])
+        else:
+            v2 = float(val2) if "." in val2 else int(val2)
+    
+    return {
+        "value1": v1,
+        "constraint1": cons1,
+        "name": name,
+        "constraint2": cons2,
+        "value2": v2
+    }
+
+def apply_constraint(tensor, op, value, precision):
+    """
+    Apply a constraint to a tensor using the specified operator and value.
+    
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The tensor to constrain
+    op : str
+        Operator (">", ">=", "<", "<=", "==")
+    value : float, int, or torch.Tensor
+        The value to compare against
+    precision : float
+        The precision of the constraint
+        
+    Returns
+    -------
+    log_prob : torch.Tensor
+        Log probability of the constraint
+    """
+    if op == ">":
+        # Use sigmoid to create soft constraint for tensor > value
+        log_prob = -torch.sum(torch.nn.functional.relu(value - tensor)) / (2 * precision**2)
+    elif op == ">=":
+        log_prob = -torch.sum(torch.nn.functional.relu(value - tensor + 1e-6)) / (2 * precision**2)
+    elif op == "<":
+        log_prob = -torch.sum(torch.nn.functional.relu(tensor - value)) / (2 * precision**2)
+    elif op == "<=":
+        log_prob = -torch.sum(torch.nn.functional.relu(tensor - value + 1e-6)) / (2 * precision**2)
+    elif op == "==":
+        # Gaussian likelihood centered at value
+        log_prob = -torch.sum(torch.pow(tensor - value, 2)) / (2 * precision**2)
+    else:
+        raise ValueError(f"Unsupported constraint operator: {op}")
+    
+    return log_prob
+
+def add_pyro_observation(output, observation, precision):
+    """
+    Add observation constraint to Pyro model.
+    
+    Parameters
+    ----------
+    output : torch.Tensor
+        The output tensor to constrain
+    observation : dict or str
+        Parsed observation or observation string
+    precision : float
+        The precision of the constraint
+    """
+    if observation is None:
+        return
+    
+    # Parse observation if it's a string
+    obs = observation
+    if isinstance(observation, str):
+        obs = parse_observation(observation)
+    
+    if obs is None:
+        return
+    
+    # Apply first constraint if it exists
+    if obs["value1"] is not None and obs["constraint1"]:
+        # Invert operator for proper conditioning (due to how Program._unwrap_constrain works)
+        op = obs["constraint1"].replace(">", "<")
+        log_prob = apply_constraint(output, op, obs["value1"], precision)
+        pyro.factor("obs_factor1", log_prob)
+    
+    # Apply second constraint if it exists
+    if obs["value2"] is not None and obs["constraint2"]:
+        log_prob = apply_constraint(output, obs["constraint2"], obs["value2"], precision)
+        pyro.factor("obs_factor2", log_prob)
+
 def generate_model(prog, input_specs, name="output"):
     """
     Generate a Pyro model function from a Privugger program.
@@ -110,6 +237,16 @@ def generate_model(prog, input_specs, name="output"):
         # Get the 'name' function from the module
         prog_function = getattr(module, 'name')
     
+    # Extract observation details if prog is a Program object
+    observation = None
+    precision = 0.01  # Default precision
+    
+    if hasattr(prog, 'observation'):
+        observation = prog.observation
+        # Check if prog has a specific observation precision
+        if hasattr(prog, 'observation_precision'):
+            precision = prog.observation_precision
+    
     def model_fn():
         # Sample from priors
         prior_samples = []
@@ -132,11 +269,21 @@ def generate_model(prog, input_specs, name="output"):
             # Execute the program with the sampled priors
             result = prog_function(*prior_samples)
             
+            # Add observation constraint if present
+            if observation is not None:
+                add_pyro_observation(result, observation, precision)
+                
             # Return the program output as a deterministic node
             return pyro.deterministic(name, result)
         else:
+            output = prior_samples[-1] if prior_samples else None
+            
+            # Add observation constraint if present
+            if observation is not None and output is not None:
+                add_pyro_observation(output, observation, precision)
+                
             # If no program, return the last prior sample (used in concatenation/stacking scenarios)
-            return prior_samples[-1] if prior_samples else None
+            return output
     
     return model_fn
 
@@ -423,6 +570,8 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
         Index of the target individual's distribution
     output_name : str, optional
         Name of the output variable, defaults to "output"
+    lr: float, optional
+        Learning rate for the optimizer
         
     Returns
     -------

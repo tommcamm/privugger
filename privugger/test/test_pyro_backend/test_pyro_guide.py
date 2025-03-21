@@ -1,11 +1,12 @@
 import os
+from privugger.inference.pyro.inference import run_svi
+from privugger.inference.pyro.models import generate_guide, generate_model
 import torch
 import pyro
 import unittest
 import pytest
 
 import privugger as pv
-from privugger.inference.pyro_backend import generate_model, generate_guide, run_svi
 
 # Import example programs using relative paths that work cross-platform
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -21,3 +21,7 @@ docs/tutorials/temp.csv
 docs/_build/*
 # Uncomment the following lines if specific files are needed for GitHub Pages:
 # !docs/_build/html/.nojekyll
+
+# Ignore PyCharm-specific files
+.idea/
+*.iml

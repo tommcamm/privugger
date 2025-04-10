@@ -83,128 +83,7 @@ def get_posterior_samples(model, guide, num_samples=1000):
     
     return samples
 
-def filter_samples_by_constraints(samples, observation, threshold=0.001):
-    """
-    Filter posterior samples to only keep those satisfying constraints.
-    
-    Parameters
-    ----------
-    samples : dict
-        Dictionary of posterior samples from Pyro
-    observation : dict or str
-        Parsed observation or observation string with constraints
-    threshold : float
-        Small threshold for floating point comparison
-        
-    Returns
-    -------
-    filtered_samples : dict
-        Dictionary of filtered samples satisfying constraints
-    """
-    # Parse observation if it's a string
-    obs = observation
-    if isinstance(observation, str):
-        obs = parse_observation(observation)
-    
-    if obs is None or "output" not in samples:
-        return samples
-    
-    # Extract output samples
-    output = samples["output"]
-    
-    # Create a mask for samples that satisfy ALL constraints
-    mask = torch.ones(output.shape[0], dtype=torch.bool)
-    
-    # For bounded observations (like 5 <= output <= 10), we need special handling
-    # Check for both bounds, with appropriate operators (e.g., 5 <= x <= 10)
-    is_bounded = (obs["value1"] is not None and obs["constraint1"] and
-                  obs["value2"] is not None and obs["constraint2"] and
-                  (obs["constraint1"] in ["<=", "<", ">", ">="]) and  # Allow for all inequality operators
-                  (obs["constraint2"] in ["<=", "<", ">", ">="]))
-    
-    # For equality constraints, use a tighter threshold
-    equality_threshold = threshold / 10.0
-    
-    # Apply first constraint if it exists
-    if obs["value1"] is not None and obs["constraint1"]:
-        if obs["constraint1"] == ">":
-            mask = mask & (output > obs["value1"])
-        elif obs["constraint1"] == ">=":
-            mask = mask & (output >= obs["value1"])
-        elif obs["constraint1"] == "<":
-            mask = mask & (output < obs["value1"])
-        elif obs["constraint1"] == "<=":
-            mask = mask & (output <= obs["value1"])
-        elif obs["constraint1"] == "==":
-            mask = mask & (torch.abs(output - obs["value1"]) < equality_threshold)
-    
-    # Apply second constraint if it exists
-    if obs["value2"] is not None and obs["constraint2"]:
-        if obs["constraint2"] == ">":
-            mask = mask & (output > obs["value2"])
-        elif obs["constraint2"] == ">=":
-            mask = mask & (output >= obs["value2"])
-        elif obs["constraint2"] == "<":
-            mask = mask & (output < obs["value2"])
-        elif obs["constraint2"] == "<=":
-            mask = mask & (output <= obs["value2"])
-        elif obs["constraint2"] == "==":
-            mask = mask & (torch.abs(output - obs["value2"]) < equality_threshold)
-    
-    # Count valid samples
-    valid_sample_count = torch.sum(mask).item()
-    if valid_sample_count == 0:
-        print("Warning: No samples satisfy the constraints! Using closest samples instead.")
-        
-        # For equality constraints, select samples closest to the target value
-        if obs["constraint2"] == "==":
-            target_value = obs["value2"]
-            # Calculate distance from target
-            distances = torch.abs(output - target_value)
-            # Get the closest 10% of samples
-            num_to_select = max(int(0.1 * len(output)), 1)
-            _, indices = torch.topk(distances, num_to_select, largest=False)
-            # Create a new mask
-            new_mask = torch.zeros_like(mask)
-            new_mask[indices] = True
-            mask = new_mask
-            valid_sample_count = torch.sum(mask).item()
-            print(f"Selected {valid_sample_count} samples closest to target value {target_value}")
-        
-        # For bounded constraints, select samples closest to the range
-        elif is_bounded:
-            lower_bound = obs["value1"]
-            upper_bound = obs["value2"]
-            # Calculate distance from bounds
-            below_mask = output < lower_bound
-            above_mask = output > upper_bound
-            # For samples below the range, distance is to lower bound
-            below_distances = torch.abs(output - lower_bound) * below_mask.float()
-            # For samples above the range, distance is to upper bound
-            above_distances = torch.abs(output - upper_bound) * above_mask.float()
-            # Combined distances
-            distances = below_distances + above_distances
-            # Get the closest 10% of samples
-            num_to_select = max(int(0.1 * len(output)), 1)
-            _, indices = torch.topk(distances, num_to_select, largest=False)
-            # Create a new mask
-            new_mask = torch.zeros_like(mask)
-            new_mask[indices] = True
-            mask = new_mask
-            valid_sample_count = torch.sum(mask).item()
-            print(f"Selected {valid_sample_count} samples closest to range [{lower_bound}, {upper_bound}]")
-        
-        # If still no valid samples, return original samples
-        if valid_sample_count == 0:
-            return samples
-    
-    # Filter all samples using the mask
-    filtered_samples = {}
-    for key, value in samples.items():
-        filtered_samples[key] = value[mask]
-    
-    print(f"Filtered samples: {valid_sample_count} / {len(mask)} samples satisfy the constraints")
-    return filtered_samples
+# Post-filtering approach removed in favor of stronger in-model constraints
 
 def pyro_to_arviz(samples, num_chains=2):
     """
@@ -251,9 +130,9 @@ def pyro_to_arviz(samples, num_chains=2):
     # Convert to ArviZ format with explicit dimensions
     return az.convert_to_inference_data(posterior_dict)
 
-def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, target_idx=0, output_name="output", chains=2, lr=0.01, apply_constraints_filter=True):
+def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, target_idx=0, output_name="output", chains=2, lr=0.01):
     """
-    Run inference using Pyro backend.
+    Run inference using Pyro backend with SVI.
     
     Parameters
     ----------
@@ -275,9 +154,6 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
         Number of chains for ArviZ conversion
     lr: float, optional
         Learning rate for the optimizer
-    apply_constraints_filter: bool, optional
-        Whether to apply post-processing constraint filtering.
-        When True, samples that don't satisfy constraints will be filtered out.
         
     Returns
     -------
@@ -288,6 +164,7 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
     prog_function = prog
     prog_name = output_name
     observation = None
+    precision = 0.01  # Default precision
     
     # If it's a Program object (from privugger.data_structures.program.Program)
     if hasattr(prog, 'program') and hasattr(prog, 'name'):
@@ -296,35 +173,25 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
         # Get observation if it exists
         if hasattr(prog, 'observation'):
             observation = prog.observation
+        # Get precision if specified
+        if hasattr(prog, 'observation_precision'):
+            precision = prog.observation_precision
     
     # Create model and guide
     model = generate_model(prog_function, input_specs, name=prog_name)
     guide = generate_guide(input_specs, target_idx)
     
-    # Run SVI
-    svi, losses = run_svi(model, guide, num_steps=num_steps, lr=lr)
-    
-    # Get posterior samples
-    if apply_constraints_filter and observation:
-        # Get more samples initially (3x) to ensure we have enough after filtering
-        print("Applying constraint filtering...")
-        extra_samples = get_posterior_samples(model, guide, num_samples=num_samples*3)
-        
-        # Filter samples based on constraints with a tighter threshold
-        filtered = filter_samples_by_constraints(extra_samples, observation, threshold=0.0001)
-        
-        # If we have enough samples after filtering
-        if len(next(iter(filtered.values()))) >= num_samples:
-            samples = {}
-            # Trim to requested sample count
-            for k in filtered:
-                samples[k] = filtered[k][:num_samples]
-        else:
-            print(f"Warning: Only {len(next(iter(filtered.values())))} samples left after filtering, less than requested {num_samples}")
-            samples = filtered
+    # Run SVI with more steps if there are observations to ensure convergence
+    if observation:
+        # Observations can make optimization harder, so use more steps
+        effective_steps = num_steps * 2
+        print(f"Observations detected, running SVI with {effective_steps} steps")
+        svi, losses = run_svi(model, guide, num_steps=effective_steps, lr=lr)
     else:
-        # Standard sample collection
-        samples = get_posterior_samples(model, guide, num_samples=num_samples)
+        svi, losses = run_svi(model, guide, num_steps=num_steps, lr=lr)
+    
+    # Get posterior samples directly
+    samples = get_posterior_samples(model, guide, num_samples=num_samples)
     
     # Convert to ArviZ format, passing the chains parameter
     return pyro_to_arviz(samples, num_chains=chains)

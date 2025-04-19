@@ -178,7 +178,8 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
             precision = prog.observation_precision
     
     # Create model and guide
-    model = generate_model(prog_function, input_specs, name=prog_name)
+    # Pass the entire Program object for observations to work correctly
+    model = generate_model(prog_function, input_specs, name=prog_name, prog_obj=prog)
     guide = generate_guide(input_specs, target_idx)
     
     # Run SVI with more steps if there are observations to ensure convergence

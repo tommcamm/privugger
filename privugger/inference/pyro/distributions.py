@@ -5,7 +5,7 @@ import torch
 import pyro
 import pyro.distributions as dist
 from privugger.distributions.continuous import Continuous
-from privugger.distributions.discrete import Discrete, Constant, TensorConstant
+from privugger.distributions.discrete import Discrete, Constant, TensorConstant, Categorical, Bernoulli, Binomial, DiscreteUniform, Geometric
 
 def dist_to_pyro(privug_dist, name, hypers=None):
     """
@@ -64,6 +64,77 @@ def dist_to_pyro(privug_dist, name, hypers=None):
         if is_multi_element:
             dist_obj = dist_obj.to_event(1)
         return pyro.sample(name, dist_obj)
+    
+    # Discrete distributions
+    elif privug_dist.__class__.__name__ == "Categorical":
+        # Convert probabilities to tensor
+        probs = torch.tensor(privug_dist.p, dtype=torch.float32)
+        dist_obj = dist.Categorical(probs=probs).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
+    
+    elif privug_dist.__class__.__name__ == "Bernoulli":
+        # Convert probability to tensor
+        probs = torch.tensor(privug_dist.p, dtype=torch.float32)
+        dist_obj = dist.Bernoulli(probs=probs).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
+    
+    elif privug_dist.__class__.__name__ == "Binomial":
+        # Convert parameters to tensors
+        total_count = torch.tensor(privug_dist.n, dtype=torch.float32)
+        probs = torch.tensor(privug_dist.p, dtype=torch.float32)
+        dist_obj = dist.Binomial(total_count=total_count, probs=probs).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
+    
+    elif privug_dist.__class__.__name__ == "DiscreteUniform":
+        # In Pyro, we can use Categorical with uniform probabilities to represent DiscreteUniform
+        # Create a range of values and uniform probabilities
+        low = int(privug_dist.lower)
+        high = int(privug_dist.upper) + 1  # +1 because upper is inclusive
+        num_values = high - low
+        
+        # Create uniform probabilities
+        probs = torch.ones(num_values, dtype=torch.float32) / num_values
+        
+        # Use Categorical distribution
+        cat_dist = dist.Categorical(probs=probs).expand(dist_shape)
+        
+        # Map categorical outcomes to the actual range
+        # This is a transformation: cat_sample + low gives the desired range
+        if is_multi_element:
+            cat_dist = cat_dist.to_event(1)
+        
+        # Sample from categorical and transform
+        cat_sample = pyro.sample(f"{name}_categorical", cat_dist)
+        transformed_sample = cat_sample + low
+        
+        # Return as a deterministic node with the original name
+        return pyro.deterministic(name, transformed_sample)
+    
+    elif privug_dist.__class__.__name__ == "Geometric":
+        # Convert probability to tensor
+        probs = torch.tensor(privug_dist.p, dtype=torch.float32)
+        dist_obj = dist.Geometric(probs=probs).expand(dist_shape)
+        if is_multi_element:
+            dist_obj = dist_obj.to_event(1)
+        return pyro.sample(name, dist_obj)
+    
+    elif privug_dist.__class__.__name__ == "Constant" or privug_dist.__class__.__name__ == "TensorConstant":
+        # For constants, use a Delta distribution
+        value = torch.tensor(privug_dist.val, dtype=torch.float32)
+        if isinstance(value, (list, tuple)):
+            value = torch.tensor(value, dtype=torch.float32)
+        
+        # If multi-element, expand to the right shape
+        if is_multi_element and not torch.is_tensor(value):
+            value = value.expand(dist_shape)
+            
+        return pyro.deterministic(name, value)
     
     else:
         raise ValueError(f"Unsupported distribution type: {privug_dist.__class__.__name__}")

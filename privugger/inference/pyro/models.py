@@ -9,7 +9,7 @@ import os
 from privugger.inference.pyro.distributions import dist_to_pyro
 from privugger.inference.pyro.observations import add_pyro_observation
 
-def generate_model(prog, input_specs, name="output"):
+def generate_model(prog, input_specs, name="output", prog_obj=None):
     """
     Generate a Pyro model function from a Privugger program.
     
@@ -22,6 +22,8 @@ def generate_model(prog, input_specs, name="output"):
         List of input specifications (distributions)
     name : str, optional
         Name for the model
+    prog_obj : Program object, optional
+        The full Program object which may contain observation data
         
     Returns
     -------
@@ -46,11 +48,19 @@ def generate_model(prog, input_specs, name="output"):
         # Get the 'name' function from the module
         prog_function = getattr(module, 'name')
     
-    # Extract observation details if prog is a Program object
+    # Extract observation details from either prog or prog_obj
     observation = None
     precision = 0.01  # Default precision
     
-    if hasattr(prog, 'observation'):
+    # First check if prog_obj is provided and has observation
+    if prog_obj is not None:
+        if hasattr(prog_obj, 'observation'):
+            observation = prog_obj.observation
+            # Check if prog_obj has a specific observation precision
+            if hasattr(prog_obj, 'observation_precision'):
+                precision = prog_obj.observation_precision
+    # Otherwise check the prog parameter (for backward compatibility)
+    elif hasattr(prog, 'observation'):
         observation = prog.observation
         # Check if prog has a specific observation precision
         if hasattr(prog, 'observation_precision'):
@@ -210,6 +220,162 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     
                     # Sample from the approximate posterior
                     dist_obj = dist.Normal(mu_param, sigma_param).expand(dist_shape)
+                    if prior.num_elements > 1:  # If it's a multi-element distribution
+                        dist_obj = dist_obj.to_event(1)
+                    pyro.sample(dist_name, dist_obj)
+                
+                elif prior.__class__.__name__ == "Categorical":
+                    # For Categorical, use a Dirichlet distribution to parameterize the probabilities
+                    # Initialize concentration parameters based on prior probabilities
+                    p_tensor = torch.tensor(prior.p, dtype=torch.float32)
+                    
+                    # Initialize concentration params with a small base value plus prior probabilities
+                    # This helps avoid degeneracy and keeps the initial variational distribution close to the prior
+                    concentration_init = p_tensor + 0.1
+                    
+                    # Create parameter for Dirichlet distribution
+                    concentration_param = pyro.param(
+                        f"concentration_{dist_name}",
+                        concentration_init,
+                        constraint=dist.constraints.positive
+                    )
+                    
+                    # Sample from a normalized Dirichlet distribution to get categorical probabilities
+                    probs = pyro.sample(
+                        f"{dist_name}_probs", 
+                        dist.Dirichlet(concentration_param)
+                    )
+                    
+                    # Create a categorical distribution with these probabilities
+                    dist_obj = dist.Categorical(probs=probs).expand(dist_shape)
+                    if prior.num_elements > 1:  # If it's a multi-element distribution
+                        dist_obj = dist_obj.to_event(1)
+                    pyro.sample(dist_name, dist_obj)
+                
+                elif prior.__class__.__name__ == "Bernoulli":
+                    # For Bernoulli, use a Beta distribution for the probability parameter
+                    # Initialize with values that give mean close to prior probability
+                    p_init = prior.p
+                    concentration1 = p_init * 10.0 + 1.0  # alpha = p*k + 1
+                    concentration0 = (1.0 - p_init) * 10.0 + 1.0  # beta = (1-p)*k + 1
+                    
+                    # Create parameters for Beta distribution
+                    concentration1_param = pyro.param(
+                        f"concentration1_{dist_name}",
+                        torch.tensor(concentration1, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    concentration0_param = pyro.param(
+                        f"concentration0_{dist_name}",
+                        torch.tensor(concentration0, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    
+                    # Sample from Beta to get Bernoulli probability
+                    prob = pyro.sample(
+                        f"{dist_name}_prob", 
+                        dist.Beta(concentration1_param, concentration0_param)
+                    )
+                    
+                    # Create Bernoulli with this probability
+                    dist_obj = dist.Bernoulli(probs=prob).expand(dist_shape)
+                    if prior.num_elements > 1:  # If it's a multi-element distribution
+                        dist_obj = dist_obj.to_event(1)
+                    pyro.sample(dist_name, dist_obj)
+                
+                elif prior.__class__.__name__ == "Binomial":
+                    # For Binomial, we'll use a Beta distribution for the probability parameter
+                    # The total_count (n) is fixed
+                    p_init = prior.p
+                    concentration1 = p_init * 10.0 + 1.0
+                    concentration0 = (1.0 - p_init) * 10.0 + 1.0
+                    
+                    # Create parameters for Beta distribution
+                    concentration1_param = pyro.param(
+                        f"concentration1_{dist_name}",
+                        torch.tensor(concentration1, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    concentration0_param = pyro.param(
+                        f"concentration0_{dist_name}",
+                        torch.tensor(concentration0, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    
+                    # Sample from Beta to get Binomial probability
+                    prob = pyro.sample(
+                        f"{dist_name}_prob", 
+                        dist.Beta(concentration1_param, concentration0_param)
+                    )
+                    
+                    # Create Binomial with fixed n and sampled probability
+                    n = torch.tensor(prior.n, dtype=torch.float32)
+                    dist_obj = dist.Binomial(total_count=n, probs=prob).expand(dist_shape)
+                    if prior.num_elements > 1:  # If it's a multi-element distribution
+                        dist_obj = dist_obj.to_event(1)
+                    pyro.sample(dist_name, dist_obj)
+                
+                elif prior.__class__.__name__ == "DiscreteUniform":
+                    # For DiscreteUniform, we'll use a similar approach to Categorical
+                    # but with uniform initialization of the Dirichlet concentration
+                    low = int(prior.lower)
+                    high = int(prior.upper) + 1  # +1 because upper is inclusive
+                    num_values = high - low
+                    
+                    # Create uniform concentration parameters
+                    concentration_init = torch.ones(num_values, dtype=torch.float32)
+                    
+                    # Create parameter for Dirichlet distribution
+                    concentration_param = pyro.param(
+                        f"concentration_{dist_name}",
+                        concentration_init,
+                        constraint=dist.constraints.positive
+                    )
+                    
+                    # Sample categorical probabilities from Dirichlet
+                    probs = pyro.sample(
+                        f"{dist_name}_probs", 
+                        dist.Dirichlet(concentration_param)
+                    )
+                    
+                    # Create a categorical distribution with these probabilities
+                    cat_dist = dist.Categorical(probs=probs).expand(dist_shape)
+                    if prior.num_elements > 1:
+                        cat_dist = cat_dist.to_event(1)
+                    
+                    # Sample from categorical
+                    cat_sample = pyro.sample(f"{dist_name}_categorical", cat_dist)
+                    
+                    # Transform to the desired range and deterministically set as our sample
+                    transformed_sample = cat_sample + low
+                    pyro.deterministic(dist_name, transformed_sample)
+                
+                elif prior.__class__.__name__ == "Geometric":
+                    # For Geometric, use a Beta distribution for the probability parameter
+                    p_init = prior.p
+                    concentration1 = p_init * 10.0 + 1.0
+                    concentration0 = (1.0 - p_init) * 10.0 + 1.0
+                    
+                    # Create parameters for Beta distribution
+                    concentration1_param = pyro.param(
+                        f"concentration1_{dist_name}",
+                        torch.tensor(concentration1, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    concentration0_param = pyro.param(
+                        f"concentration0_{dist_name}",
+                        torch.tensor(concentration0, dtype=torch.float32),
+                        constraint=dist.constraints.positive
+                    )
+                    
+                    # Sample from Beta to get Geometric probability
+                    prob = pyro.sample(
+                        f"{dist_name}_prob", 
+                        dist.Beta(concentration1_param, concentration0_param)
+                    )
+                    
+                    # Create Geometric with this probability
+                    dist_obj = dist.Geometric(probs=prob).expand(dist_shape)
                     if prior.num_elements > 1:  # If it's a multi-element distribution
                         dist_obj = dist_obj.to_event(1)
                     pyro.sample(dist_name, dist_obj)

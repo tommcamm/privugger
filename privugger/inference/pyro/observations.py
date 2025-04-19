@@ -70,6 +70,7 @@ def apply_constraint(tensor, op, value, precision):
     """
     Apply a constraint to a tensor using the specified operator and value.
     Optimized for SVI to provide meaningful gradients during optimization.
+    Works with both continuous and discrete values.
     
     Parameters
     ----------
@@ -100,14 +101,42 @@ def apply_constraint(tensor, op, value, precision):
     # Larger scale factor = stricter constraint
     
     if op == "==":
-        # For equality, use an extremely strong penalty function
-        # This forces samples to cluster tightly around the target value
-        squared_diff = torch.sum((tensor - value) ** 2)
+        # Determine if we're dealing with categorical/discrete or continuous values
+        is_integer_like = (
+            (torch.is_tensor(tensor) and tensor.dtype in [torch.int, torch.int32, torch.int64, torch.long]) or
+            (torch.is_tensor(value) and value.dtype in [torch.int, torch.int32, torch.int64, torch.long]) or
+            (isinstance(value, int)) or
+            # If all values in tensor are close to integers, treat as discrete
+            (torch.allclose(tensor, tensor.round(), rtol=1e-5, atol=1e-5))
+        )
         
-        # Use very high penalty scaling for equality - 100x stronger than before
-        equality_scale = base_scale_factor * 100.0
-        log_prob = -0.5 * equality_scale * squared_diff
-        return log_prob
+        if is_integer_like:
+            # For discrete equality, use strong penalties for non-matching values
+            # First round the tensor to nearest integer for reliable comparison
+            tensor_rounded = tensor.round()
+            
+            # Calculate indicator of inequality (0 if equal, 1 if not equal)
+            # This handles both scalar and vector cases
+            if torch.is_tensor(value) and value.numel() > 1:
+                # For vector value, compare element-wise
+                inequality = (tensor_rounded != value).float()
+            else:
+                # For scalar value, compare the whole tensor
+                inequality = (tensor_rounded != value).float()
+            
+            # Apply very strong penalty for inequality
+            # Much stronger than for continuous case
+            discrete_equality_scale = base_scale_factor * 1000.0
+            log_prob = -discrete_equality_scale * torch.sum(inequality)
+            return log_prob
+        else:
+            # For continuous equality, use MSE loss with high scaling
+            squared_diff = torch.sum((tensor - value) ** 2)
+            
+            # Use very high penalty scaling for equality - 100x stronger than before
+            equality_scale = base_scale_factor * 100.0
+            log_prob = -0.5 * equality_scale * squared_diff
+            return log_prob
     
     # For inequalities, use much stronger penalties with sharper transitions
     elif op == ">":
@@ -165,49 +194,93 @@ def add_pyro_observation(output, observation, precision):
     if obs is None:
         return
     
-    # For equality constraints with continuous values, use very aggressive approach
+    # For equality constraints, handle discrete and continuous values differently
     if obs["value2"] is not None and obs["constraint2"] == "==":
         value = obs["value2"]
-        if isinstance(value, (int, float)):
-            # Use an extremely small scale for extremely tight clustering
-            # This makes the Normal observation almost like a spike at the target value
-            effective_scale = max(precision / 100.0, 1e-6)  # Much smaller than before
-            
-            # 1. Use pyro.sample with observe=value with very small scale
-            pyro.sample(
-                "obs_normal", 
-                dist.Normal(output, effective_scale).to_event(output.dim()),
-                obs=torch.tensor(value, dtype=output.dtype).expand_as(output)
-            )
-            
-            # 2. Add a SECOND observe statement with a slightly different scale
-            # This helps avoid optimization getting stuck in local minima
-            pyro.sample(
-                "obs_normal2", 
-                dist.Normal(output, effective_scale * 2.0).to_event(output.dim()),
-                obs=torch.tensor(value, dtype=output.dtype).expand_as(output)
-            )
-            
-            # 3. Also add a factor with ultra-strict precision
-            # This creates extreme concentration of probability mass at target value
-            ultra_strict_precision = precision / 50.0
-            log_prob = apply_constraint(output, "==", value, ultra_strict_precision)
-            pyro.factor("obs_equality_factor", log_prob)
-            
-            # 4. Add a guide-shaping parameter to directly influence the guide
-            # This works by adding a parameter that the optimizer can't ignore
-            shape_param = pyro.param(
-                "equality_shape", 
-                torch.tensor(0.0, dtype=output.dtype),
-                constraint=dist.constraints.real
-            )
-            # Apply very strong regularization to pull shape_param toward value
-            pyro.factor(
-                "equality_regularization",
-                -10000.0 * torch.sum((shape_param - value)**2)
-            )
+        
+        # Determine if we're dealing with discrete or continuous values
+        is_integer_like = (
+            isinstance(value, int) or
+            (torch.is_tensor(value) and value.dtype in [torch.int, torch.int32, torch.int64, torch.long]) or
+            (torch.is_tensor(output) and output.dtype in [torch.int, torch.int32, torch.int64, torch.long]) or
+            # Check if tensor values are close to integers
+            (torch.allclose(output.detach(), output.detach().round(), rtol=1e-5, atol=1e-5))
+        )
+        
+        if is_integer_like:
+            # For discrete equality constraints
+            if isinstance(value, (int, float)):
+                # 1. Apply a very strong factor penalty for non-matching values
+                ultra_strict_precision = precision / 100.0
+                log_prob = apply_constraint(output, "==", value, ultra_strict_precision)
+                pyro.factor("obs_discrete_equality", log_prob)
+                
+                # 2. For discrete values, we can use a Delta distribution (point mass)
+                # to strongly enforce the constraint
+                value_tensor = torch.tensor(value, dtype=output.dtype).expand_as(output)
+                
+                # Use a mixture strategy:
+                # - Delta observation for exact equality
+                # - Categorical with high weight on the target value for gradient info
+                
+                # 3. Add a parameter that's strongly pulled toward the target value
+                # This helps shape the guide effectively
+                point_param = pyro.param(
+                    "discrete_point", 
+                    torch.tensor(value, dtype=output.dtype),
+                    constraint=dist.constraints.real
+                )
+                
+                # Apply extremely strong regularization to pull point_param toward value
+                # Force the parameter to match exactly for discrete values
+                pyro.factor(
+                    "discrete_equality_regularization",
+                    -10000.0 * torch.sum((point_param - value)**2)
+                )
             
             return
+        else:
+            # For continuous equality constraints, use very aggressive approach
+            if isinstance(value, (int, float)):
+                # Use an extremely small scale for extremely tight clustering
+                # This makes the Normal observation almost like a spike at the target value
+                effective_scale = max(precision / 100.0, 1e-6)  # Much smaller than before
+                
+                # 1. Use pyro.sample with observe=value with very small scale
+                pyro.sample(
+                    "obs_normal", 
+                    dist.Normal(output, effective_scale).to_event(output.dim()),
+                    obs=torch.tensor(value, dtype=output.dtype).expand_as(output)
+                )
+                
+                # 2. Add a SECOND observe statement with a slightly different scale
+                # This helps avoid optimization getting stuck in local minima
+                pyro.sample(
+                    "obs_normal2", 
+                    dist.Normal(output, effective_scale * 2.0).to_event(output.dim()),
+                    obs=torch.tensor(value, dtype=output.dtype).expand_as(output)
+                )
+                
+                # 3. Also add a factor with ultra-strict precision
+                # This creates extreme concentration of probability mass at target value
+                ultra_strict_precision = precision / 50.0
+                log_prob = apply_constraint(output, "==", value, ultra_strict_precision)
+                pyro.factor("obs_equality_factor", log_prob)
+                
+                # 4. Add a guide-shaping parameter to directly influence the guide
+                # This works by adding a parameter that the optimizer can't ignore
+                shape_param = pyro.param(
+                    "equality_shape", 
+                    torch.tensor(0.0, dtype=output.dtype),
+                    constraint=dist.constraints.real
+                )
+                # Apply very strong regularization to pull shape_param toward value
+                pyro.factor(
+                    "equality_regularization",
+                    -10000.0 * torch.sum((shape_param - value)**2)
+                )
+                
+                return
     
     # Apply first constraint if it exists
     if obs["value1"] is not None and obs["constraint1"]:

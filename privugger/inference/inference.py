@@ -40,9 +40,10 @@ BACKEND_PARAMETERS = {
 # Common parameters used by all backends
 COMMON_PARAMETERS = ["method", "prog"]
 
-def warn_unused_parameters(method, provided_params):
+def warn_unused_parameters(method, provided_params, default_params=None):
     """
     Check for parameters that are not used by the specified backend method.
+    Only warns about parameters that were explicitly provided (not defaults).
     
     Parameters
     ----------
@@ -50,6 +51,8 @@ def warn_unused_parameters(method, provided_params):
         The backend method name ("pymc3", "scipy", or "pyro")
     provided_params : dict
         Dictionary of parameter names and their values
+    default_params : dict, optional
+        Dictionary of default parameter values to compare against
         
     Returns
     -------
@@ -63,9 +66,13 @@ def warn_unused_parameters(method, provided_params):
     backend_params = BACKEND_PARAMETERS[method]
     valid_params = set(COMMON_PARAMETERS + backend_params["required"] + backend_params["optional"])
     
-    # Check for unused parameters
+    # Check for unused parameters (only those explicitly provided)
     unused_params = {}
     for param, value in provided_params.items():
+        # Skip parameters that weren't explicitly provided (have default values)
+        if default_params and param in default_params and value == default_params[param]:
+            continue
+            
         if param not in valid_params:
             unused_params[param] = value
     
@@ -311,9 +318,16 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
         "args": args, "target_idx": target_idx, "svi_steps": svi_steps, "svi_lr": svi_lr
     }
     
+    # Define default parameter values
+    default_params = {
+        "cores": 2, "chains": 2, "draws": 500, "method": "pymc3", 
+        "return_model": False, "args_analyse": 3, "args": None,
+        "target_idx": 0, "svi_steps": 1000, "svi_lr": 0.01
+    }
+    
     # Warn about unused parameters if warnings aren't suppressed
     if not suppress_param_warnings:
-        warn_unused_parameters(method, all_params)
+        warn_unused_parameters(method, all_params, default_params)
     data_spec      = prog.dataset
     output         = prog.output_type
     num_specs      = len(data_spec.input_specs)

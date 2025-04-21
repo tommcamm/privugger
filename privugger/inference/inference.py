@@ -12,6 +12,7 @@ import pytensor.tensor as at
 import arviz as az
 import os
 import importlib
+import warnings
 
 # Import the Pyro backend
 try:
@@ -19,6 +20,63 @@ try:
     PYRO_AVAILABLE = True
 except ImportError:
     PYRO_AVAILABLE = False
+
+# Define which parameters are used by each backend
+BACKEND_PARAMETERS = {
+    "pymc3": {
+        "required": [],
+        "optional": ["cores", "chains", "draws", "return_model", "args_analyse", "args"]
+    },
+    "scipy": {
+        "required": [],
+        "optional": ["draws", "chains"]
+    },
+    "pyro": {
+        "required": [],
+        "optional": ["chains", "draws", "target_idx", "svi_steps", "svi_lr"]
+    }
+}
+
+# Common parameters used by all backends
+COMMON_PARAMETERS = ["method", "prog"]
+
+def warn_unused_parameters(method, provided_params):
+    """
+    Check for parameters that are not used by the specified backend method.
+    
+    Parameters
+    ----------
+    method : str
+        The backend method name ("pymc3", "scipy", or "pyro")
+    provided_params : dict
+        Dictionary of parameter names and their values
+        
+    Returns
+    -------
+    None
+        But issues warnings for unused parameters
+    """
+    # Get the parameters used by this backend
+    if method not in BACKEND_PARAMETERS:
+        return  # Unknown backend, can't check parameters
+        
+    backend_params = BACKEND_PARAMETERS[method]
+    valid_params = set(COMMON_PARAMETERS + backend_params["required"] + backend_params["optional"])
+    
+    # Check for unused parameters
+    unused_params = {}
+    for param, value in provided_params.items():
+        if param not in valid_params:
+            unused_params[param] = value
+    
+    # Issue a single warning with all unused parameters
+    if unused_params:
+        # Format the unused parameters as a readable string
+        params_str = ", ".join([f"'{p}' (value: {v})" for p, v in unused_params.items()])
+        warnings.warn(
+            f"The following parameters are not used by the '{method}' backend: {params_str}",
+            UserWarning
+        )
 
 ## Create a global pymc3 model and list of priors
 global_model  = None
@@ -203,7 +261,7 @@ def sample_prior(model, samples=50):
         return prior_checks
     
 def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False, args_analyse=3, args=None,
-          target_idx=0, svi_steps=1000, svi_lr=0.01):
+          target_idx=0, svi_steps=1000, svi_lr=0.01, suppress_param_warnings=False):
     """
     Parameters
     -----------
@@ -211,29 +269,51 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
     prog: the program type specified as a privugger.Program type
     
     cores: Int number of cores to use for sampling. Default 2
+           Used by: 'pymc3' backend only
     
     chains: Int number of chains. Default 2
-
+            Used by: All backends
+    
     draws: Int number of draws. Default 500
+           Used by: All backends
 
     method: String specifying which backend to use. Options: "pymc3", "scipy", "pyro"
+            Default: "pymc3"
 
     return_model: Boolean. Returns the probabilistic model if true and the trace if false
+                 Used by: 'pymc3' backend only
 
     args_analyse: Int default 3
+                 Used by: 'pymc3' backend only
 
     args: Additional arguments (optional)
+          Used by: 'pymc3' backend only
 
     target_idx: Int index of the target individual's distribution for Pyro SVI. Default 0
+               Used by: 'pyro' backend only
 
     svi_steps: Int number of SVI steps for Pyro backend. Default 1000
+              Used by: 'pyro' backend only
     
     svi_lr: Float learning rate for SVI optimizer in Pyro backend. Default 0.01
+           Used by: 'pyro' backend only
+    
+    suppress_param_warnings: Boolean. If True, warnings about unused parameters will be suppressed. Default False
 
     Returns
     ----------
     Trace produced by the probabilistic programming inference: Arviz trace
     """
+    # Collect all parameters to check for unused ones
+    all_params = {
+        "prog": prog, "cores": cores, "chains": chains, "draws": draws,
+        "method": method, "return_model": return_model, "args_analyse": args_analyse,
+        "args": args, "target_idx": target_idx, "svi_steps": svi_steps, "svi_lr": svi_lr
+    }
+    
+    # Warn about unused parameters if warnings aren't suppressed
+    if not suppress_param_warnings:
+        warn_unused_parameters(method, all_params)
     data_spec      = prog.dataset
     output         = prog.output_type
     num_specs      = len(data_spec.input_specs)

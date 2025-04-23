@@ -33,7 +33,8 @@ BACKEND_PARAMETERS = {
     },
     "pyro": {
         "required": [],
-        "optional": ["chains", "draws", "target_idx", "svi_steps", "svi_lr"]
+        "optional": ["chains", "draws", "target_idx", "svi_steps", "svi_lr", 
+                     "pyro_method", "autoguide", "warmup_steps"]
     }
 }
 
@@ -268,7 +269,8 @@ def sample_prior(model, samples=50):
         return prior_checks
     
 def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False, args_analyse=3, args=None,
-          target_idx=0, svi_steps=1000, svi_lr=0.01, suppress_param_warnings=False):
+          target_idx=0, svi_steps=1000, svi_lr=0.01, suppress_param_warnings=False,
+          pyro_method="svi", autoguide=False, warmup_steps=None):
     """
     Parameters
     -----------
@@ -306,6 +308,19 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
            Used by: 'pyro' backend only
     
     suppress_param_warnings: Boolean. If True, warnings about unused parameters will be suppressed. Default False
+    
+    pyro_method: String specifying the inference method for Pyro backend. Options: "svi", "mcmc", "hybrid"
+                Default: "svi"
+                - "svi": Run SVI only; return guide draws as idata.posterior
+                - "hybrid": Run SVI then warm-started NUTS; guide's median seeds init_to_value
+                - "mcmc": Skip SVI, run NUTS/HMC from scratch
+                Used by: 'pyro' backend only
+    
+    autoguide: Boolean. If True, use Pyro's AutoGuide for variational inference. Default False
+              Used by: 'pyro' backend only
+    
+    warmup_steps: Int number of warmup steps for MCMC in Pyro. Default None (uses num_steps // 5)
+                 Used by: 'pyro' backend only
 
     Returns
     ----------
@@ -315,14 +330,16 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
     all_params = {
         "prog": prog, "cores": cores, "chains": chains, "draws": draws,
         "method": method, "return_model": return_model, "args_analyse": args_analyse,
-        "args": args, "target_idx": target_idx, "svi_steps": svi_steps, "svi_lr": svi_lr
+        "args": args, "target_idx": target_idx, "svi_steps": svi_steps, "svi_lr": svi_lr,
+        "pyro_method": pyro_method, "autoguide": autoguide, "warmup_steps": warmup_steps
     }
     
     # Define default parameter values
     default_params = {
         "cores": 2, "chains": 2, "draws": 500, "method": "pymc3", 
         "return_model": False, "args_analyse": 3, "args": None,
-        "target_idx": 0, "svi_steps": 1000, "svi_lr": 0.01
+        "target_idx": 0, "svi_steps": 1000, "svi_lr": 0.01,
+        "pyro_method": "svi", "autoguide": False, "warmup_steps": None
     }
     
     # Warn about unused parameters if warnings aren't suppressed
@@ -471,7 +488,10 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
             target_idx=target_idx,
             output_name=prog.name,
             chains=chains,
-            lr=svi_lr
+            lr=svi_lr,
+            method=pyro_method,
+            autoguide=autoguide,
+            warmup_steps=warmup_steps
         )
     
     else:

@@ -1,10 +1,19 @@
 """
 Core inference functionality for Pyro backend.
+
+This module provides various inference methods for Pyro:
+- SVI (Stochastic Variational Inference)
+- MCMC (NUTS/HMC)
+- Hybrid (SVI + MCMC)
+
+It also supports automatic guide generation using AutoGuide.
 """
 import torch
 import pyro
 import numpy as np
-from pyro.infer import SVI, Trace_ELBO, Predictive
+from pyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
+from pyro.infer.autoguide import AutoNormal
+from pyro.infer import init_to_value, init_to_median
 from pyro.optim import Adam
 import arviz as az
 from privugger.inference.pyro.models import generate_model, generate_guide
@@ -130,9 +139,130 @@ def pyro_to_arviz(samples, num_chains=2):
     # Convert to ArviZ format with explicit dimensions
     return az.convert_to_inference_data(posterior_dict)
 
-def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, target_idx=0, output_name="output", chains=2, lr=0.01):
+def run_mcmc(model, num_samples=1000, num_chains=2, warmup_steps=200):
     """
-    Run inference using Pyro backend with SVI.
+    Run MCMC inference using Pyro's NUTS sampler.
+    
+    Parameters
+    ----------
+    model : callable
+        The Pyro model function
+    num_samples : int, optional
+        Number of samples to draw
+    num_chains : int, optional
+        Number of chains to run
+    warmup_steps : int, optional
+        Number of warmup steps
+        
+    Returns
+    -------
+    mcmc : MCMC
+        The MCMC object after running
+    samples : dict
+        Dictionary of samples
+    """
+    # Clear the param store in case we're running multiple inferences
+    pyro.clear_param_store()
+    
+    # Set up the NUTS kernel
+    nuts_kernel = NUTS(model)
+    
+    # Set up MCMC
+    mcmc = MCMC(nuts_kernel, 
+                num_samples=num_samples, 
+                num_chains=num_chains,
+                warmup_steps=warmup_steps)
+    
+    # Run MCMC
+    mcmc.run()
+    
+    # Get samples
+    samples = mcmc.get_samples()
+    
+    return mcmc, samples
+
+def run_hybrid(model, guide, num_svi_steps=1000, lr=0.01, 
+               num_samples=1000, num_chains=2, warmup_steps=200):
+    """
+    Run hybrid inference: 
+    1. SVI for initial approximation
+    2. MCMC (NUTS) warm-started with SVI result
+    
+    Parameters
+    ----------
+    model : callable
+        The Pyro model function
+    guide : callable
+        The Pyro guide function
+    num_svi_steps : int, optional
+        Number of SVI steps
+    lr : float, optional
+        Learning rate for SVI
+    num_samples, num_chains, warmup_steps : int, optional
+        MCMC parameters
+        
+    Returns
+    -------
+    mcmc : MCMC
+        The MCMC object after running
+    samples : dict
+        Dictionary of samples from MCMC
+    """
+    # 1. Run SVI first
+    svi, _ = run_svi(model, guide, num_steps=num_svi_steps, lr=lr)
+    
+    # 2. Get posterior samples from SVI to use as initial values
+    svi_samples = get_posterior_samples(model, guide, num_samples=100)
+    
+    # 3. Compute median values to use as initial points for MCMC
+    init_values = {}
+    for name, value in svi_samples.items():
+        if torch.is_tensor(value):
+            # Compute median along sample dimension
+            init_values[name] = value.median(dim=0)[0]
+    
+    # 4. Create NUTS kernel with initial values from SVI
+    nuts_kernel = NUTS(model, init_strategy=init_to_value(values=init_values))
+    
+    # 5. Run MCMC with initialization from SVI
+    mcmc = MCMC(nuts_kernel, 
+                num_samples=num_samples, 
+                num_chains=num_chains,
+                warmup_steps=warmup_steps)
+    mcmc.run()
+    
+    # 6. Get samples
+    samples = mcmc.get_samples()
+    
+    return mcmc, samples
+
+def generate_auto_guide(model, target_names=None):
+    """
+    Generate an automatic guide for a model using Pyro's AutoGuide.
+    
+    Parameters
+    ----------
+    model : callable
+        The Pyro model function
+    target_names : list, optional
+        Names of the target variables to focus on
+        
+    Returns
+    -------
+    guide : AutoGuide
+        The automatic guide
+    """
+    # Create AutoGuide with appropriate init strategy
+    guide = AutoNormal(model, init_loc_fn=init_to_median)
+    
+    return guide
+
+def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000, 
+               target_idx=0, output_name="output", chains=2, lr=0.01,
+               method="svi", autoguide=False, 
+               warmup_steps=None):
+    """
+    Run inference using Pyro backend with flexible inference methods.
     
     Parameters
     ----------
@@ -143,7 +273,7 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
     output_type : type
         Output type of the program
     num_steps : int, optional
-        Number of SVI steps
+        Number of SVI steps or total MCMC steps
     num_samples : int, optional
         Number of posterior samples
     target_idx : int, optional
@@ -151,9 +281,18 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
     output_name : str, optional
         Name of the output variable, defaults to "output"
     chains : int, optional
-        Number of chains for ArviZ conversion
+        Number of chains for ArviZ conversion and MCMC
     lr: float, optional
-        Learning rate for the optimizer
+        Learning rate for the optimizer (SVI only)
+    method : str, optional
+        Inference method to use:
+        - "svi": Run SVI only (default)
+        - "mcmc": Run MCMC (NUTS) only
+        - "hybrid": Run SVI, then warm-start MCMC with SVI result
+    autoguide : bool, optional
+        Whether to use AutoGuide for SVI instead of manually constructed guide
+    warmup_steps : int, optional
+        Number of warmup steps for MCMC (default: num_steps // 5)
         
     Returns
     -------
@@ -177,22 +316,64 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
         if hasattr(prog, 'observation_precision'):
             precision = prog.observation_precision
     
-    # Create model and guide
+    # Create model 
     # Pass the entire Program object for observations to work correctly
     model = generate_model(prog_function, input_specs, name=prog_name, prog_obj=prog)
-    guide = generate_guide(input_specs, target_idx)
     
-    # Run SVI with more steps if there are observations to ensure convergence
-    if observation:
-        # Observations can make optimization harder, so use more steps
-        effective_steps = num_steps * 2
-        print(f"Observations detected, running SVI with {effective_steps} steps")
-        svi, losses = run_svi(model, guide, num_steps=effective_steps, lr=lr)
+    # Create guide based on autoguide parameter
+    if autoguide:
+        guide = generate_auto_guide(model, target_names=[input_specs[target_idx].name])
     else:
-        svi, losses = run_svi(model, guide, num_steps=num_steps, lr=lr)
+        guide = generate_guide(input_specs, target_idx)
     
-    # Get posterior samples directly
-    samples = get_posterior_samples(model, guide, num_samples=num_samples)
+    # Set default warmup steps for MCMC if not provided
+    if warmup_steps is None:
+        warmup_steps = num_steps // 5
     
-    # Convert to ArviZ format, passing the chains parameter
+    # Run inference based on method
+    if method == "svi":
+        # Run SVI with more steps if there are observations to ensure convergence
+        if observation:
+            # Observations can make optimization harder, so use more steps
+            effective_steps = num_steps * 2
+            print(f"Observations detected, running SVI with {effective_steps} steps")
+            svi, losses = run_svi(model, guide, num_steps=effective_steps, lr=lr)
+        else:
+            svi, losses = run_svi(model, guide, num_steps=num_steps, lr=lr)
+        
+        # Get posterior samples directly
+        samples = get_posterior_samples(model, guide, num_samples=num_samples)
+        
+    elif method == "mcmc":
+        # Run MCMC only
+        print(f"Running MCMC with {num_samples} samples, {chains} chains, and {warmup_steps} warmup steps")
+        _, samples = run_mcmc(model, 
+                             num_samples=num_samples, 
+                             num_chains=chains, 
+                             warmup_steps=warmup_steps)
+        
+    elif method == "hybrid":
+        # Run hybrid SVI+MCMC
+        print(f"Running hybrid SVI+MCMC: SVI with {num_steps} steps then MCMC with {num_samples} samples")
+        if observation:
+            # Observations can make optimization harder, so use more steps for SVI
+            effective_steps = num_steps * 2
+            print(f"Observations detected, running SVI with {effective_steps} steps")
+            _, samples = run_hybrid(model, guide, 
+                                  num_svi_steps=effective_steps, 
+                                  lr=lr,
+                                  num_samples=num_samples, 
+                                  num_chains=chains, 
+                                  warmup_steps=warmup_steps)
+        else:
+            _, samples = run_hybrid(model, guide, 
+                                  num_svi_steps=num_steps, 
+                                  lr=lr,
+                                  num_samples=num_samples, 
+                                  num_chains=chains, 
+                                  warmup_steps=warmup_steps)
+    else:
+        raise ValueError(f"Unknown method: {method}. Valid options are 'svi', 'mcmc', 'hybrid'")
+    
+    # Convert to ArviZ format
     return pyro_to_arviz(samples, num_chains=chains)

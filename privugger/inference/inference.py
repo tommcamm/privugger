@@ -34,7 +34,7 @@ BACKEND_PARAMETERS = {
     "pyro": {
         "required": [],
         "optional": ["chains", "draws", "target_idx", "svi_steps", "svi_lr", 
-                     "pyro_method", "autoguide", "warmup_steps"]
+                     "pyro_method", "autoguide", "guide_type", "warmup_steps"]
     }
 }
 
@@ -270,7 +270,7 @@ def sample_prior(model, samples=50):
     
 def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False, args_analyse=3, args=None,
           target_idx=0, svi_steps=1000, svi_lr=0.01, suppress_param_warnings=False,
-          pyro_method="svi", autoguide=False, warmup_steps=None):
+          pyro_method="svi", autoguide=False, guide_type="normal", warmup_steps=None):
     """
     Parameters
     -----------
@@ -331,7 +331,8 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
         "prog": prog, "cores": cores, "chains": chains, "draws": draws,
         "method": method, "return_model": return_model, "args_analyse": args_analyse,
         "args": args, "target_idx": target_idx, "svi_steps": svi_steps, "svi_lr": svi_lr,
-        "pyro_method": pyro_method, "autoguide": autoguide, "warmup_steps": warmup_steps
+        "pyro_method": pyro_method, "autoguide": autoguide, "guide_type": guide_type, 
+        "warmup_steps": warmup_steps
     }
     
     # Define default parameter values
@@ -339,7 +340,8 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
         "cores": 2, "chains": 2, "draws": 500, "method": "pymc3", 
         "return_model": False, "args_analyse": 3, "args": None,
         "target_idx": 0, "svi_steps": 1000, "svi_lr": 0.01,
-        "pyro_method": "svi", "autoguide": False, "warmup_steps": None
+        "pyro_method": "svi", "autoguide": False, "guide_type": "normal", 
+        "warmup_steps": None
     }
     
     # Warn about unused parameters if warnings aren't suppressed
@@ -491,6 +493,7 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
             lr=svi_lr,
             method=pyro_method,
             autoguide=autoguide,
+            guide_type=guide_type,
             warmup_steps=warmup_steps
         )
     

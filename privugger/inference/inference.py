@@ -5,6 +5,7 @@ from privugger.distributions.continuous import Continuous
 from privugger.distributions.discrete import Discrete, Constant, TensorConstant
 from privugger.transformer.PyMC3.theano_types import TheanoToken
 from privugger.transformer.PyMC3.program_output import *
+from privugger.inference.pyro import infer_pyro
 
 import astor
 import pymc as pm
@@ -14,12 +15,12 @@ import os
 import importlib
 import warnings
 
-# Import the Pyro backend
 try:
-    from privugger.inference.pyro import infer_pyro
+    import pyro
     PYRO_AVAILABLE = True
 except ImportError:
     PYRO_AVAILABLE = False
+
 
 # Define which parameters are used by each backend
 BACKEND_PARAMETERS = {

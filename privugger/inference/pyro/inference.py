@@ -13,7 +13,7 @@ import pyro
 import numpy as np
 from pyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
 from pyro.infer.autoguide import AutoNormal, AutoMultivariateNormal
-from pyro.infer import init_to_value, init_to_median
+from pyro.infer.autoguide.initialization import init_to_value, init_to_median
 from pyro.optim import Adam
 import arviz as az
 from privugger.inference.pyro.models import generate_model, generate_guide

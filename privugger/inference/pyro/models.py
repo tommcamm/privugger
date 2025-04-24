@@ -225,6 +225,10 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     pyro.sample(dist_name, dist_obj)
                 
                 elif prior.__class__.__name__ == "Categorical":
+                    ## !NOTE! Massive issues
+                    # 1- High‐variance gradients for discrete sites under vanilla SVI -> Slow convergence
+                    # 2- Loss function for categorical should be TraceEnum_ELBO where possible!
+
                     # For Categorical, use a Dirichlet distribution to parameterize the probabilities
                     # Initialize concentration parameters based on prior probabilities
                     p_tensor = torch.tensor(prior.p, dtype=torch.float32)

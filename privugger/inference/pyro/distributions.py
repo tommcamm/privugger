@@ -4,6 +4,7 @@ Distribution conversion utilities for Pyro backend.
 import torch
 import pyro
 import pyro.distributions as dist
+from pyro.distributions import RelaxedOneHotCategoricalStraightThrough
 from privugger.distributions.continuous import Continuous
 from privugger.distributions.discrete import Discrete, Constant, TensorConstant, Categorical, Bernoulli, Binomial, DiscreteUniform, Geometric
 
@@ -67,12 +68,30 @@ def dist_to_pyro(privug_dist, name, hypers=None):
     
     # Discrete distributions
     elif privug_dist.__class__.__name__ == "Categorical":
-        # Convert probabilities to tensor
-        probs = torch.tensor(privug_dist.p, dtype=torch.float32)
-        dist_obj = dist.Categorical(probs=probs).expand(dist_shape)
+        precision = 1
+
+        # build logits from the prior probs
+        p = torch.tensor(privug_dist.p, dtype=torch.float32)
+        logits = torch.log(p)
+
+        # temperature tied to user‐supplied precision
+        temperature = max(precision/100.0, 1e-2)
+
+        # construct a straight‐through Gumbel‐Softmax
+        base = RelaxedOneHotCategoricalStraightThrough(
+            temperature=temperature,
+            logits=logits
+        )
+        # expand into the full batch + category shape
+        base = base.expand(dist_shape + (len(p),))
         if is_multi_element:
-            dist_obj = dist_obj.to_event(1)
-        return pyro.sample(name, dist_obj)
+            base = base.to_event(1)
+
+        # sample the one‐hot
+        one_hot = pyro.sample(name, base)
+
+        return one_hot.argmax(-1)
+
     
     elif privug_dist.__class__.__name__ == "Bernoulli":
         # Convert probability to tensor

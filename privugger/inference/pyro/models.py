@@ -6,6 +6,7 @@ import pyro
 import pyro.distributions as dist
 import importlib.util
 import os
+from pyro.distributions import RelaxedOneHotCategoricalStraightThrough
 from privugger.inference.pyro.distributions import dist_to_pyro
 from privugger.inference.pyro.observations import add_pyro_observation
 
@@ -225,36 +226,22 @@ def generate_guide(input_specs, target_idx=0, name="guide"):
                     pyro.sample(dist_name, dist_obj)
                 
                 elif prior.__class__.__name__ == "Categorical":
-                    ## !NOTE! Massive issues
-                    # 1- High‐variance gradients for discrete sites under vanilla SVI -> Slow convergence
-                    # 2- Loss function for categorical should be TraceEnum_ELBO where possible!
+                    # 1) get raw probabilities → logits
+                    p = torch.tensor(prior.p, dtype=torch.float32)
+                    logits = torch.log(p)
 
-                    # For Categorical, use a Dirichlet distribution to parameterize the probabilities
-                    # Initialize concentration parameters based on prior probabilities
-                    p_tensor = torch.tensor(prior.p, dtype=torch.float32)
-                    
-                    # Initialize concentration params with a small base value plus prior probabilities
-                    # This helps avoid degeneracy and keeps the initial variational distribution close to the prior
-                    concentration_init = p_tensor + 0.1
-                    
-                    # Create parameter for Dirichlet distribution
-                    concentration_param = pyro.param(
-                        f"concentration_{dist_name}",
-                        concentration_init,
-                        constraint=dist.constraints.positive
-                    )
-                    
-                    # Sample from a normalized Dirichlet distribution to get categorical probabilities
-                    probs = pyro.sample(
-                        f"{dist_name}_probs", 
-                        dist.Dirichlet(concentration_param)
-                    )
-                    
-                    # Create a categorical distribution with these probabilities
-                    dist_obj = dist.Categorical(probs=probs).expand(dist_shape)
-                    if prior.num_elements > 1:  # If it's a multi-element distribution
-                        dist_obj = dist_obj.to_event(1)
-                    pyro.sample(dist_name, dist_obj)
+                    # 2) build a standard, hard Categorical for the model
+                    base = dist.Categorical(logits=logits)
+
+                    # 3) expand into any batch shape your privug_dist indicates
+                    base = base.expand(dist_shape)
+
+                    # 4) if this is a vector of independent categoricals, mark the last dim as an event
+                    if prior.is_multi_element:
+                        base = base.to_event(1)
+
+                    # 5) draw a hard integer sample
+                    return pyro.sample(name, base)
                 
                 elif prior.__class__.__name__ == "Bernoulli":
                     # For Bernoulli, use a Beta distribution for the probability parameter

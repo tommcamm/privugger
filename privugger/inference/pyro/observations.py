@@ -7,8 +7,10 @@ It focuses on effective constraint encoding that provides good gradient
 information during optimization.
 """
 import torch
+import torch.nn.functional as F
 import pyro
 import pyro.distributions as dist
+from pyro.distributions import RelaxedOneHotCategoricalStraightThrough
 import re
 
 def parse_observation(constraints_str):
@@ -199,45 +201,38 @@ def add_pyro_observation(output, observation, precision):
         value = obs["value2"]
         
         # Determine if we're dealing with discrete or continuous values
-        is_integer_like = (
-            isinstance(value, int) or
-            (torch.is_tensor(value) and value.dtype in [torch.int, torch.int32, torch.int64, torch.long]) or
-            (torch.is_tensor(output) and output.dtype in [torch.int, torch.int32, torch.int64, torch.long]) or
-            # Check if tensor values are close to integers
-            (torch.allclose(output.detach(), output.detach().round(), rtol=1e-5, atol=1e-5))
+        is_int = isinstance(value, int) or (
+            torch.is_tensor(value) and value.numel() == 1
         )
         
-        if is_integer_like:
-            # For discrete equality constraints
-            if isinstance(value, (int, float)):
-                # 1. Apply a very strong factor penalty for non-matching values
-                ultra_strict_precision = precision / 100.0
-                log_prob = apply_constraint(output, "==", value, ultra_strict_precision)
-                pyro.factor("obs_discrete_equality", log_prob)
-                
-                # 2. For discrete values, we can use a Delta distribution (point mass)
-                # to strongly enforce the constraint
-                value_tensor = torch.tensor(value, dtype=output.dtype).expand_as(output)
-                
-                # Use a mixture strategy:
-                # - Delta observation for exact equality
-                # - Categorical with high weight on the target value for gradient info
-                
-                # 3. Add a parameter that's strongly pulled toward the target value
-                # This helps shape the guide effectively
-                point_param = pyro.param(
-                    "discrete_point", 
-                    torch.tensor(value, dtype=output.dtype),
-                    constraint=dist.constraints.real
-                )
-                
-                # Apply extremely strong regularization to pull point_param toward value
-                # Force the parameter to match exactly for discrete values
-                pyro.factor(
-                    "discrete_equality_regularization",
-                    -10000.0 * torch.sum((point_param - value)**2)
-                )
-            
+        if is_int:
+
+             # ensure scalar
+            value = int(value) if not isinstance(value, int) else value
+            # assume output is logits or unnormalized scores, shape (..., K)
+            K = output.size(-1)
+            # build one-hot obs, shape (..., K)
+            # if output is batched, value should be tensor of shape (...,)
+            if not torch.is_tensor(value):
+                # scalar case: broadcast to batch of 1
+                one_hot = F.one_hot(torch.tensor(value), num_classes=K).float()
+            else:
+                # batched case: value is a LongTensor matching output batch shape
+                one_hot = F.one_hot(value.long(), num_classes=K).float()
+
+            # temperature for Gumbel-Softmax
+            tau = max(precision / 100.0, 1e-2)
+            # Convert tau to a PyTorch tensor
+            tau = torch.tensor(tau, dtype=torch.float32)
+
+            pyro.sample(
+                "obs_cat",
+                RelaxedOneHotCategoricalStraightThrough(
+                    temperature=tau,
+                    logits=output     # <-- **uses your latent**!
+                ).to_event(1),          # last dim K is one event
+                obs=one_hot
+            )
             return
         else:
             # For continuous equality constraints, use very aggressive approach

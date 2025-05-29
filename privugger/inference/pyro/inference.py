@@ -15,6 +15,7 @@ from pyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
 from pyro.infer.autoguide import AutoNormal, AutoMultivariateNormal
 from pyro.infer.autoguide.initialization import init_to_value, init_to_median
 from pyro.optim import Adam
+from pyro.distributions import RelaxedOneHotCategoricalStraightThrough
 import arviz as az
 from privugger.inference.pyro.models import generate_model, generate_guide
 from privugger.inference.pyro.observations import parse_observation

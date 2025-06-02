@@ -305,7 +305,9 @@ def infer(prog, cores=2, chains=2, draws=500, method="pymc3", return_model=False
     svi_steps: Int number of SVI steps for Pyro backend. Default 1000
               Used by: 'pyro' backend only
     
-    svi_lr: Float learning rate for SVI optimizer in Pyro backend. Default 0.01
+    svi_lr: Float or str learning rate for SVI optimizer in Pyro backend. Default 0.01
+           Can also be set to "auto" for automatic learning rate scheduling with ClippedAdam
+           and ExponentialLR.
            Used by: 'pyro' backend only
     
     suppress_param_warnings: Boolean. If True, warnings about unused parameters will be suppressed. Default False

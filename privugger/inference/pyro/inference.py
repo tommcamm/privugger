@@ -20,51 +20,51 @@ import arviz as az
 from privugger.inference.pyro.models import generate_model, generate_guide
 from privugger.inference.pyro.observations import parse_observation
 
-def run_svi(model, guide, num_steps=1000, lr=0.01):
-    """
-    Run stochastic variational inference.
-    
-    Parameters
-    ----------
-    model : callable
-        The Pyro model function
-    guide : callable
-        The Pyro guide function
-    num_steps : int, optional
-        Number of optimization steps
-    lr : float, optional
-        Learning rate for the optimizer
-        
-    Returns
-    -------
-    svi : SVI
-        The SVI object
-    losses : list
-        List of loss values during optimization
-    """
-    # Clear the param store in case we're running multiple inferences
+import pyro
+from pyro.infer import SVI, Trace_ELBO
+import pyro.optim as pyroopt
+
+import pyro
+from pyro.infer import SVI, Trace_ELBO
+import pyro.optim as pyroopt
+from tqdm.auto import tqdm
+
+def run_svi(model, guide, num_steps=1000, lr=1e-3):
+    # 0) Clear any existing parameter state before starting
     pyro.clear_param_store()
-    
-    # Set up the optimizer
-    optimizer = Adam({"lr": lr})
-    
-    # Set up SVI with Trace_ELBO loss
-    # For SVI, we want to maximize the ELBO, which is equivalent to minimizing -ELBO
-    svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
-    
-    # Run SVI
+    optimizer = torch.optim.Adam
+
+    # 1) Configure optimizer (and scheduler if lr=="auto")
+    if lr == "auto":
+        base_lr = 1e-3
+        base_gamma = 0.99
+
+       
+        scheduler = pyro.optim.ExponentialLR({'optimizer': optimizer, 'optim_args': {'lr': base_lr}, 'gamma': base_gamma}) 
+        print(f"[run_svi] Automatic LR scheduling → start_lr={base_lr}, gamma=0.{base_gamma}")
+    else:
+        # Use a fixed‐LR Adam optimizer (no scheduler)
+        scheduler = pyroopt.ClippedAdam({"lr": lr})
+        print(f"[run_svi] Using fixed learning-rate Adam: lr={lr}")
+
+    # 2) Build the SVI object with Trace_ELBO loss
+    svi = SVI(model, guide, scheduler, loss=Trace_ELBO())
+
+    # 3) Run the optimization loop
     losses = []
-    for step in range(num_steps):
-        # svi.step() returns the negative ELBO loss
-        # We store the absolute value to ensure consistent behavior in tests
-        # This way, loss will always start high and decrease during convergence
-        loss = abs(svi.step())
+    pbar = tqdm(range(num_steps), desc="SVI", unit="step")
+    for step in pbar:
+        loss = svi.step()
         losses.append(loss)
-        
-        # Print progress every 100 steps
-        if step % 100 == 0:
-            print(f"Step {step}/{num_steps} - Loss: {loss:.4f}")
-    
+
+        if step % 50 == 0 or step == num_steps - 1:
+            state = scheduler.get_state()
+            postfix = {"loss": f"{loss:.2f}"}
+            for name, sub in state.items():
+                postfix[f"{name}_lr"] = f"{sub['scheduler']['_last_lr'][0]:.5f}"
+            pbar.set_postfix(**postfix)
+
+
     return svi, losses
 
 def get_posterior_samples(model, guide, num_samples=1000):
@@ -200,8 +200,8 @@ def run_hybrid(model, guide, num_svi_steps=1000, lr=0.01,
         The Pyro guide function
     num_svi_steps : int, optional
         Number of SVI steps
-    lr : float, optional
-        Learning rate for SVI
+    lr : float or str, optional
+        Learning rate for SVI or "auto" for automatic scheduling
     num_samples, num_chains, warmup_steps : int, optional
         MCMC parameters
         
@@ -347,8 +347,9 @@ def infer_pyro(prog, input_specs, output_type, num_steps=1000, num_samples=1000,
         Name of the output variable, defaults to "output"
     chains : int, optional
         Number of chains for ArviZ conversion and MCMC
-    lr: float, optional
-        Learning rate for the optimizer (SVI only)
+    lr: float or str, optional
+        Learning rate for the optimizer (SVI only) or "auto" to use automatic
+        learning rate scheduling with ClippedAdam and ExponentialLR
     method : str, optional
         Inference method to use:
         - "svi": Run SVI only (default)

@@ -17,6 +17,9 @@ docs/tutorials/temp.csv
 # Exclude notebooks directory
 /notebooks/
 
+# Exclude netflix.csv.gz files
+docs/tutorials/*/netflix.csv.gz
+
 # Exclude build files but allow GitHub Pages publishing
 docs/_build/*
 # Uncomment the following lines if specific files are needed for GitHub Pages:
